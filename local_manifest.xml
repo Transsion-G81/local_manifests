@@ -20,6 +20,6 @@
   
  <!-- Device Support stuffs -->
   <project path="vendor/mediatek/ims" name="techyminati/android_vendor_mediatek_ims" remote="gitbub" revision="android-16-qpr2" />
-  <project path="device/mediatek/sepolicy_vndr" name="crdroidandroid/android_device_mediatek_sepolicy_vndr" remote="gitbub" revision="16.0" />
-  <project path="hardware/mediatek" name="crdroidandroid/android_hardware_mediatek" remote="gitbub" revision="16.0" />
+  <project path="device/mediatek/sepolicy_vndr" name="LineageOS/android_device_mediatek_sepolicy_vndr" remote="gitbub" revision="lineage-23.2" />
+  <project path="hardware/mediatek" name="LineageOS/android_hardware_mediatek" remote="gitbub" revision="lineage-23.2" />
 </manifest>
