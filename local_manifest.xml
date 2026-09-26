@@ -4,19 +4,19 @@
 <remote name="gitbub" fetch="https://github.com/" />
 
   <!-- Infinix X6531 -->
-  <project name="Transsion-G81/android_device_infinix_X6531" path="device/infinix/X6531" remote="gitbub" revision="main" />
-  <project name="Transsion-G81/android_vendor_infinix_X6531" path="vendor/infinix/X6531" remote="gitbub" revision="main" />
-  <project name="Transsion-G81/android_kernel_infinix_X6531" path="device/infinix/X6531-kernel" remote="gitbub" revision="main" />
+  <project name="Transsion-G81/android_device_infinix_X6531" path="device/infinix/X6531" remote="gitbub" revision="lineage-23.2" />
+  <project name="Transsion-G81/android_vendor_infinix_X6531" path="vendor/infinix/X6531" remote="gitbub" revision="lineage-23.2" />
+  <project name="Transsion-G81/android_kernel_infinix_X6531" path="device/infinix/X6531-kernel" remote="gitbub" revision="lineage-23.2" />
 
   <!-- Infinix X6532 -->
-  <project name="Transsion-G81/android_device_infinix_X6532" path="device/infinix/X6532" remote="gitbub" revision="main" />
-  <project name="Transsion-G81/android_vendor_infinix_X6532" path="vendor/infinix/X6532" remote="gitbub" revision="main" />
-  <project name="Transsion-G81/android_kernel_infinix_X6532" path="device/infinix/X6532-kernel" remote="gitbub" revision="main" />
+  <project name="Transsion-G81/android_device_infinix_X6532" path="device/infinix/X6532" remote="gitbub" revision="lineage-23.2" />
+  <project name="Transsion-G81/android_vendor_infinix_X6532" path="vendor/infinix/X6532" remote="gitbub" revision="lineage-23.2" />
+  <project name="Transsion-G81/android_kernel_infinix_X6532" path="device/infinix/X6532-kernel" remote="gitbub" revision="lineage-23.2" />
 
   <!-- Tecno KL5 -->
-  <project name="Transsion-G81/android_device_tecno_KL5" path="device/tecno/KL5" remote="gitbub" revision="main" />
-  <project name="Transsion-G81/android_vendor_tecno_KL5" path="vendor/tecno/KL5" remote="gitbub" revision="main" />
-  <project name="Transsion-G81/android_kernel_tecno_KL5" path="device/tecno/KL5-kernel" remote="gitbub" revision="main" />
+  <project name="Transsion-G81/android_device_tecno_KL5" path="device/tecno/KL5" remote="gitbub" revision="lineage-23.2" />
+  <project name="Transsion-G81/android_vendor_tecno_KL5" path="vendor/tecno/KL5" remote="gitbub" revision="lineage-23.2" />
+  <project name="Transsion-G81/android_kernel_tecno_KL5" path="device/tecno/KL5-kernel" remote="gitbub" revision="lineage-23.2" />
   
  <!-- Device Support stuffs -->
   <project path="vendor/mediatek/ims" name="techyminati/android_vendor_mediatek_ims" remote="gitbub" revision="android-16-qpr2" />
