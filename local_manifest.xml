@@ -22,4 +22,7 @@
   <project path="vendor/mediatek/ims" name="techyminati/android_vendor_mediatek_ims" remote="gitbub" revision="android-16-qpr2" />
   <project path="device/mediatek/sepolicy_vndr" name="LineageOS/android_device_mediatek_sepolicy_vndr" remote="gitbub" revision="lineage-23.2" />
   <project path="hardware/mediatek" name="LineageOS/android_hardware_mediatek" remote="gitbub" revision="lineage-23.2" />
+
+<!-- Keys -->
+  <project path="vendor/lineage-priv/keys" name="opek098/vendor_tran_g81_keys" remote="gitbub" revision="main" />
 </manifest>
