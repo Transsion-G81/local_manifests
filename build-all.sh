@@ -27,6 +27,12 @@ BUZZ_DOWNLOAD_BASE="${BUZZHEAVIER_DOWNLOAD_BASE:-https://buzzheavier.com}"
 BUZZ_ACCOUNT_ID="${BUZZHEAVIER_ACCOUNT_ID:-}"
 BUZZ_FOLDER_ID="${BUZZHEAVIER_FOLDER_ID:-}"
 
+# status notifications: --notify URL (Discord/Slack webhook) or Telegram
+# (--notify telegram:TOKEN:CHAT, or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
+NOTIFY_MODE="${NOTIFY_MODE:-}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+
 MAKE_TARGET="${MAKE_TARGET:-bacon}"
 JOBS="${JOBS:-}"
 WITH_XGSI_LOGS="${WITH_XGSI_LOGS:-}"
@@ -114,7 +120,9 @@ Options:
       --jobs N                       make -jN (default: mka default)
       --ccache SIZE                  enable ccache and cap it at SIZE (e.g. 50G)
       --no-build                     skip building; re-upload collected artifacts
-      --notify URL                   POST a status line to a Discord/Slack webhook
+      --notify TARGET                status ping: a Discord/Slack webhook URL,
+                                     telegram:TOKEN:CHAT, or a Telegram bot URL
+      --telegram TOKEN:CHAT          shorthand for --notify telegram:TOKEN:CHAT
       --min-free GB                  refuse to start below this free space (default 40)
       --keep-going                   keep building the rest after a failure
       --dry-run                      print the plan, touch nothing
@@ -123,12 +131,18 @@ Options:
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
      MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  MAKE_TARGET
+     TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
 product-config time, so clear out/target/product/<device> before toggling it on
 a tree that already built.
+
+Telegram: create a bot with @BotFather for the token, message the bot, then get
+your chat id (e.g. https://api.telegram.org/bot<TOKEN>/getUpdates).  Then use
+--notify telegram:<TOKEN>:<CHAT_ID> (or export TELEGRAM_BOT_TOKEN and
+TELEGRAM_CHAT_ID, which enables Telegram notify on its own).
 EOF
 }
 
@@ -395,18 +409,55 @@ bh_upload() {
   UPLOADED=$((UPLOADED + 1))
 }
 
-# POST a one-line status to a Discord/Slack-style webhook (best effort).
+# POST a one-line status to a Discord/Slack webhook or a Telegram chat (best
+# effort).  Telegram is used when --notify telegram[:TOKEN:CHAT] is given or
+# both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set; otherwise the plain
+# webhook payload {"content":..,"text":..} is posted to NOTIFY_URL.
 notify() {
-  local msg="$1" payload
-  [[ -n "$NOTIFY_URL" ]] || return 0
-  if [[ "$DRY_RUN" == "yes" ]]; then info "notify (dry-run): $msg"; return 0; fi
-  payload=$(printf '{"content":%s,"text":%s}' "$(json_str "$msg")" "$(json_str "$msg")")
-  if curl -sS -o /dev/null --max-time 20 -X POST -H 'Content-Type: application/json' \
-       --data "$payload" "$NOTIFY_URL" 2>/dev/null; then
-    ok "webhook notified"
+  local msg="$1" payload="" url=""
+  if [[ "$NOTIFY_MODE" == "telegram" ]]; then
+    [[ -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] || {
+      warn "telegram notify: need --notify telegram:TOKEN:CHAT or TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"; return 0; }
+    url="https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
+    payload=$(printf '{"chat_id":%s,"text":%s,"disable_web_page_preview":true}' \
+      "$(json_str "$TELEGRAM_CHAT_ID")" "$(json_str "$msg")")
+  elif [[ -n "$NOTIFY_URL" ]]; then
+    url="$NOTIFY_URL"
+    payload=$(printf '{"content":%s,"text":%s}' "$(json_str "$msg")" "$(json_str "$msg")")
   else
-    warn "webhook notify failed"
+    return 0
   fi
+  if [[ "$DRY_RUN" == "yes" ]]; then info "notify (dry-run): $msg"; return 0; fi
+  if curl -sS -o /dev/null --max-time 20 -X POST -H 'Content-Type: application/json' \
+       --data "$payload" "$url" 2>/dev/null; then
+    ok "notified"
+  else
+    warn "notify failed"
+  fi
+}
+
+# --notify accepts a webhook URL, "telegram", "telegram:TOKEN:CHAT", or a
+# copy-pasted https://api.telegram.org/bot<token>/sendMessage URL.
+parse_notify() {
+  local v="$1" spec
+  NOTIFY_URL=""
+  case "$v" in
+    "" ) NOTIFY_MODE="" ;;
+    telegram|telegram:*)
+      NOTIFY_MODE="telegram"
+      spec="${v#telegram}"; spec="${spec#:}"
+      if [[ -n "$spec" ]]; then
+        TELEGRAM_BOT_TOKEN="${spec%:*}"      # bot id:secret (keep the colon)
+        TELEGRAM_CHAT_ID="${spec##*:}"       # everything after the last colon
+      fi ;;
+    *api.telegram.org/bot*)
+      NOTIFY_MODE="telegram"
+      spec="${v%%\?*}"; spec="${spec#*api.telegram.org/bot}"; TELEGRAM_BOT_TOKEN="${spec%%/*}"
+      if [[ "$v" == *chat_id=* ]]; then
+        spec="${v#*chat_id=}"; TELEGRAM_CHAT_ID="${spec%%&*}"
+      fi ;;
+    * ) NOTIFY_MODE="webhook"; NOTIFY_URL="$v" ;;
+  esac
 }
 
 # ------------------------------------------------------------------ build ----
@@ -799,7 +850,8 @@ parse_args() {
       --jobs)         JOBS="${2:-}"; shift 2 ;;
       --ccache)       CCACHE_SIZE="${2:-}"; shift 2 ;;
       --no-build)     NO_BUILD="yes"; shift ;;
-      --notify)       NOTIFY_URL="${2:-}"; shift 2 ;;
+      --notify)       parse_notify "${2:-}"; shift 2 ;;
+      --telegram)     parse_notify "telegram:${2:-}"; shift 2 ;;
       --min-free)     MIN_FREE_GB="${2:-}"; shift 2 ;;
       --keep-going)   KEEP_GOING="yes"; shift ;;
       --dry-run)      DRY_RUN="yes"; shift ;;
@@ -867,6 +919,7 @@ on_interrupt() {
 
 main() {
   parse_args "$@"
+  [[ -z "$NOTIFY_MODE" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] && NOTIFY_MODE="telegram"
   need curl; need sha1sum; need sha256sum; need base64
   find_root
 
@@ -899,6 +952,7 @@ main() {
   [[ "$NO_BUILD" == "yes" ]] && info "build    : skipped (--no-build)"
   [[ -n "$CCACHE_SIZE" ]] && info "ccache   : ${CCACHE_SIZE}"
   [[ -n "$WITH_XGSI_LOGS" ]] && info "xgsi     : boot/dmesg logs on"
+  [[ -n "$NOTIFY_MODE" ]] && info "notify   : $NOTIFY_MODE"
   info "devices  : $(for e in "${SELECTED[@]}"; do printf '%s ' "${e%%|*}"; done)"
   info "releases : ${RELEASE_ROOT#$ANDROID_ROOT/}/$VARIANT"
   say "======================================================================"

@@ -38,6 +38,19 @@ chmod +x build-all.sh
 # already built, or the copied log scripts may not land in the rom
 WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 
+# status ping when the run ends - Telegram:
+#   1) create a bot with @BotFather and copy the token
+#   2) send the bot a message, then read your chat id from
+#      https://api.telegram.org/bot<TOKEN>/getUpdates
+./build-all.sh -v userdebug -u yes --notify telegram:<TOKEN>:<CHAT_ID>
+
+# ...or export them once and Telegram notify turns itself on
+export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
+./build-all.sh -v userdebug -u yes
+
+# a plain webhook URL still posts the Discord/Slack payload
+./build-all.sh --notify https://discord.com/api/webhooks/...
+
 # sign in to buzzheavier for longer-lived links (anonymous links expire in a
 # few days; the expiry is printed for every upload)
 ./build-all.sh -v userdebug -u yes -a <account_id>
@@ -53,7 +66,6 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 ./build-all.sh --check-only      # firmware + tree checks only, no build
 ./build-all.sh --dry-run         # print the plan, touch nothing
 ./build-all.sh --min-free 60     # refuse to start below 60G free
-./build-all.sh --notify https://discord.com/api/webhooks/...   # status ping
 
 # all options
 ./build-all.sh --help
