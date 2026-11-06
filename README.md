@@ -23,6 +23,12 @@ chmod +x build-all.sh
 # sha256-verified against the hash the service reports)
 ./build-all.sh
 
+# the menu is a pure-bash full-screen TUI: up/down move, space toggles a
+# device or the upload switch, left/right picks the variant, a/n select
+# all/none, enter starts, q quits.  nothing has to be installed - no dialog,
+# whiptail or fzf.  without a terminal (or with stdin piped) it falls back to
+# the plain numbered prompts.
+
 # non-interactive: -v user|userdebug|eng, -u [yes|no] to upload
 ./build-all.sh -v userdebug -u yes
 

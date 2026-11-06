@@ -10,7 +10,7 @@
 # Run it from the root of the LineageOS source tree (the dir holding
 # build/envsetup.sh) or point ANDROID_ROOT at it:
 #
-#     ./build-all.sh                       # interactive menu
+#     ./build-all.sh                       # interactive TUI menu
 #     ./build-all.sh -v userdebug -u yes    # non-interactive
 #     ANDROID_ROOT=~/lineage ./build-all.sh
 #
@@ -69,6 +69,7 @@ RUN_START=0
 # ------------------------------------------------------------------ utils ----
 
 c_reset=$'\033[0m'; c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_cyn=$'\033[36m'
+c_bold=$'\033[1m'; c_rev=$'\033[7m'
 say()  { printf '%s\n' "$*"; }
 info() { printf '%s[*]%s %s\n'  "$c_cyn" "$c_reset" "$*"; }
 ok()   { printf '%s[ok]%s %s\n' "$c_grn" "$c_reset" "$*"; }
@@ -87,9 +88,13 @@ patches when PATCH_NFC=true, so it runs after the clean builds.
 Run it from the root of the LineageOS source tree (the dir holding
 build/envsetup.sh) or point ANDROID_ROOT at it:
 
-    ./build-all.sh                        # interactive menu
+    ./build-all.sh                        # interactive TUI menu
     ./build-all.sh -v userdebug -u yes     # non-interactive
     ANDROID_ROOT=~/lineage ./build-all.sh
+
+The menu is a pure-bash full-screen TUI (arrow keys, checkboxes, colours) -
+dialog, whiptail and fzf are not used and nothing has to be installed.  Piping
+stdin or running without a terminal falls back to plain numbered prompts.
 
 Before every build it sha1-checks each radio (firmware) image the vendor tree
 declares for that product, so a wrong or mixed-up firmware is refused.  After
@@ -100,7 +105,7 @@ links expire in a few days).
 Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
 
 Options:
-  -v, --variant user|userdebug|eng   build variant (default: interactive menu)
+  -v, --variant user|userdebug|eng   build variant (default: interactive TUI)
   -d, --devices LIST                 all | X6531,X6531B,X6532,KL5,KL5n
   -u, --upload | --no-upload         upload to Buzzheavier (default: --no-upload)
   -a, --account ID                   Buzzheavier account id (else anonymous)
@@ -572,7 +577,157 @@ add_json_record() {
 
 ask() { local p="$1" d="$2" a; read -r -p "$p [$d]: " a </dev/tty; printf '%s' "${a:-$d}"; }
 
-interactive_menu() {
+# Pure-bash full-screen TUI: every key (arrows included) arrives through
+# read -rsn1, so nothing has to be installed - no dialog, whiptail or fzf.
+# The tty state is saved up front and restored on every exit path.
+TUI_FOCUS=0
+TUI_VARIANT="user"
+TUI_UPLOAD="yes"
+TUI_STATUS=""
+TUI_STTY=""
+TUI_VARIANTS=(user userdebug eng)
+declare -a TUI_SEL=()
+
+tui_cleanup() {
+  [[ -n "$TUI_STTY" ]] && stty "$TUI_STTY" </dev/tty 2>/dev/null
+  TUI_STTY=""
+  printf '\033[?25h\033[0m'
+  trap - INT TERM
+}
+
+# one keypress -> a symbolic name (arrows are ESC [ A/B/C/D)
+tui_key() {
+  local k a b
+  IFS= read -rsn1 k </dev/tty || return 1
+  if [[ "$k" == $'\033' ]]; then
+    IFS= read -rsn1 -t 0.05 a </dev/tty || true
+    IFS= read -rsn1 -t 0.05 b </dev/tty || true
+    case "$a$b" in
+      '[A'|'OA') printf 'up' ;;
+      '[B'|'OB') printf 'down' ;;
+      '[C'|'OC') printf 'right' ;;
+      '[D'|'OD') printf 'left' ;;
+      *)         printf 'quit' ;;
+    esac
+    return 0
+  fi
+  case "$k" in
+    '')   printf 'enter' ;;
+    ' ')  printf 'space' ;;
+    q|Q)  printf 'quit' ;;
+    h|H)  printf 'left' ;;
+    l|L)  printf 'right' ;;
+    j|J)  printf 'down' ;;
+    k|K)  printf 'up' ;;
+    a|A)  printf 'all' ;;
+    n|N)  printf 'none' ;;
+    u|U)  printf 'upload' ;;
+    *)    printf 'noop' ;;
+  esac
+}
+
+tui_cycle() {   # move the variant by $1 (+1 / -1)
+  local dir="$1" i
+  for i in "${!TUI_VARIANTS[@]}"; do
+    [[ "${TUI_VARIANTS[$i]}" == "$TUI_VARIANT" ]] && break
+  done
+  i=$(((i + dir + ${#TUI_VARIANTS[@]}) % ${#TUI_VARIANTS[@]}))
+  TUI_VARIANT="${TUI_VARIANTS[$i]}"
+}
+
+tui_mark() { (( $1 == TUI_FOCUS )) && printf " ${c_bold}>${c_reset} " || printf '   '; }
+
+tui_render() {
+  local n=${#DEVICES[@]} i lab short row
+  printf '\033[H'
+  printf '  %s%stranG81%s - build + release\033[K\n' "$c_cyn" "$c_bold" "$c_reset" "$c_reset"
+  printf '  %s%s%s\033[K\n' "$c_cyn" '────────────────────────────────────────────────────────────' "$c_reset"
+  printf '\033[K\n'
+
+  printf '   %svariant%s  ' "$c_cyn" "$c_reset"
+  for lab in "${TUI_VARIANTS[@]}"; do
+    if [[ "$lab" == "$TUI_VARIANT" ]]; then printf '%s %s %s ' "$c_rev" "$lab" "$c_reset"
+    else printf ' %s  ' "$lab"; fi
+  done
+  printf '\033[K\n'
+  printf '\033[K\n'
+
+  printf '   %sdevices%s  (space toggles, a all, n none)\033[K\n' "$c_cyn" "$c_reset"
+  for ((i = 0; i < n; i++)); do
+    short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
+    row="$(tui_mark $((i + 1)))"
+    (( TUI_SEL[i] )) && row+="[x] " || row+="[ ] "
+    (( TUI_FOCUS == i + 1 )) && row+="${c_bold}${short}${c_reset}" || row+="$short"
+    printf '%s\033[K\n' "$row"
+  done
+  printf '\033[K\n'
+
+  row="$(tui_mark $((n + 1)))"
+  [[ "$TUI_UPLOAD" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 1 )) && row+="${c_bold}upload to Buzzheavier${c_reset}" || row+="upload to Buzzheavier"
+  printf '%s\033[K\n' "$row"
+  printf '\033[K\n'
+
+  printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant   %sa%s all   %sn%s none\033[K\n' \
+    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
+  printf '   %senter%s start   %sq%s quit\033[K\n' "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
+  [[ -n "$TUI_STATUS" ]] && printf '   %s%s%s\033[K\n' "$c_yel" "$TUI_STATUS" "$c_reset" || printf '\033[K\n'
+  printf '\033[J'
+}
+
+tui_run() {
+  local n=${#DEVICES[@]} i key short req="" all=1 any
+  TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"
+  TUI_SEL=()
+  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done
+  [[ -n "${VARIANT:-}" ]] && TUI_VARIANT="$VARIANT"
+
+  TUI_STTY="$(stty -g </dev/tty 2>/dev/null)"
+  stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+  trap 'tui_cleanup; exit 130' INT TERM
+  printf '\033[2J\033[?25l'
+  tui_render
+
+  while :; do
+    key="$(tui_key)" || { tui_cleanup; die "no input"; }
+    TUI_STATUS=""
+    case "$key" in
+      up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
+      down) (( TUI_FOCUS < n + 1 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      left|right)
+        (( TUI_FOCUS == 0 )) && { [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1; } ;;
+      space)
+        if   (( TUI_FOCUS == 0 ));     then tui_cycle 1
+        elif (( TUI_FOCUS == n + 1 )); then [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes"
+        else TUI_SEL[TUI_FOCUS - 1]=$((1 - TUI_SEL[TUI_FOCUS - 1]))
+        fi ;;
+      upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
+      all)  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done ;;
+      none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
+      enter)
+        any=0
+        for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
+        if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
+        break ;;
+      quit) tui_cleanup; say ""; die "build cancelled" ;;
+      *) : ;;
+    esac
+    tui_render
+  done
+
+  for ((i = 0; i < n; i++)); do
+    short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
+    (( TUI_SEL[i] )) && req+="${req:+,}$short" || all=0
+  done
+  tui_cleanup
+  printf '\033[2J\033[H'
+  VARIANT="$TUI_VARIANT"
+  DO_UPLOAD="$TUI_UPLOAD"
+  [[ "$all" == 1 ]] && REQUESTED="all" || REQUESTED="$req"
+}
+
+# plain ask() flow, used when there is no terminal to draw on
+menu_ask() {
   local v i short
 
   say ""
@@ -592,14 +747,16 @@ interactive_menu() {
       short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
       say "  $((i + 1))) $short"
     done
-    REQUESTED=$(ask "numbers, comma separated" "1,2,3,4,5")
+    REQUESTED="$(ask "numbers, comma separated" "1,2,3,4,5")"
   fi
 
-  if [[ "$(ask "upload to Buzzheavier?" "y")" =~ ^[Yy] ]]; then
-    DO_UPLOAD="yes"
-    if [[ -z "$BUZZ_ACCOUNT_ID" ]]; then
-      BUZZ_ACCOUNT_ID=$(ask "Buzzheavier account id (blank = anonymous)" "")
-    fi
+  [[ "$(ask "upload to Buzzheavier?" "y")" =~ ^[Yy] ]] && DO_UPLOAD="yes" || DO_UPLOAD="no"
+}
+
+interactive_menu() {
+  [[ -t 0 && -r /dev/tty ]] && tui_run || menu_ask
+  if [[ "$DO_UPLOAD" == "yes" && -z "$BUZZ_ACCOUNT_ID" ]]; then
+    BUZZ_ACCOUNT_ID="$(ask "Buzzheavier account id (blank = anonymous)" "")"
   fi
   say ""
 }
