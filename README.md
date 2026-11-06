@@ -24,13 +24,19 @@ chmod +x build-all.sh
 ./build-all.sh
 
 # the menu is a pure-bash full-screen TUI: up/down move, space toggles a
-# device or the upload switch, left/right picks the variant, a/n select
-# all/none, enter starts, q quits.  nothing has to be installed - no dialog,
-# whiptail or fzf.  without a terminal (or with stdin piped) it falls back to
-# the plain numbered prompts.
+# device / the upload switch / the xgsi switch, left/right picks the variant,
+# a/n select all/none devices, x toggles xgsi, enter starts, q quits.
+# nothing has to be installed - no dialog, whiptail or fzf.  without a
+# terminal (or with stdin piped) it falls back to the plain numbered prompts.
 
 # non-interactive: -v user|userdebug|eng, -u [yes|no] to upload
 ./build-all.sh -v userdebug -u yes
+
+# xgsi boot/dmesg log capture (the "xgsi boot/dmesg logs" checkbox in the
+# menu, or this env var - exactly "true").  device.mk reads it at
+# product-config time, so clear out/target/product/<device> once if the tree
+# already built, or the copied log scripts may not land in the rom
+WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 
 # sign in to buzzheavier for longer-lived links (anonymous links expire in a
 # few days; the expiry is printed for every upload)

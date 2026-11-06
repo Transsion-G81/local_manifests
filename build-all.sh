@@ -122,8 +122,13 @@ Options:
   -h, --help                         this text
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
-     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS=true  MAKE_TARGET
+     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  MAKE_TARGET
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
+
+WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
+rom (the menu has a checkbox for it).  It is read from device.mk at
+product-config time, so clear out/target/product/<device> before toggling it on
+a tree that already built.
 EOF
 }
 
@@ -583,6 +588,7 @@ ask() { local p="$1" d="$2" a; read -r -p "$p [$d]: " a </dev/tty; printf '%s' "
 TUI_FOCUS=0
 TUI_VARIANT="user"
 TUI_UPLOAD="yes"
+TUI_XGSI="no"
 TUI_STATUS=""
 TUI_STTY=""
 TUI_VARIANTS=(user userdebug eng)
@@ -622,6 +628,7 @@ tui_key() {
     a|A)  printf 'all' ;;
     n|N)  printf 'none' ;;
     u|U)  printf 'upload' ;;
+    x|X)  printf 'xgsi' ;;
     *)    printf 'noop' ;;
   esac
 }
@@ -666,11 +673,17 @@ tui_render() {
   [[ "$TUI_UPLOAD" == "yes" ]] && row+="[x] " || row+="[ ] "
   (( TUI_FOCUS == n + 1 )) && row+="${c_bold}upload to Buzzheavier${c_reset}" || row+="upload to Buzzheavier"
   printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 2)))"
+  [[ "$TUI_XGSI" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 2 )) && row+="${c_bold}xgsi boot/dmesg logs${c_reset}" || row+="xgsi boot/dmesg logs"
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
   printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant   %sa%s all   %sn%s none\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
-  printf '   %senter%s start   %sq%s quit\033[K\n' "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
+  printf '   %sx%s xgsi   %senter%s start   %sq%s quit\033[K\n' \
+    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
   [[ -n "$TUI_STATUS" ]] && printf '   %s%s%s\033[K\n' "$c_yel" "$TUI_STATUS" "$c_reset" || printf '\033[K\n'
   printf '\033[J'
 }
@@ -681,6 +694,7 @@ tui_run() {
   TUI_SEL=()
   for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done
   [[ -n "${VARIANT:-}" ]] && TUI_VARIANT="$VARIANT"
+  [[ -n "${WITH_XGSI_LOGS:-}" ]] && TUI_XGSI="yes" || TUI_XGSI="no"
 
   TUI_STTY="$(stty -g </dev/tty 2>/dev/null)"
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
@@ -693,15 +707,17 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 1 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 2 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
         (( TUI_FOCUS == 0 )) && { [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1; } ;;
       space)
         if   (( TUI_FOCUS == 0 ));     then tui_cycle 1
         elif (( TUI_FOCUS == n + 1 )); then [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes"
+        elif (( TUI_FOCUS == n + 2 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
         else TUI_SEL[TUI_FOCUS - 1]=$((1 - TUI_SEL[TUI_FOCUS - 1]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
+      xgsi)   [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes" ;;
       all)  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done ;;
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
@@ -723,12 +739,13 @@ tui_run() {
   printf '\033[2J\033[H'
   VARIANT="$TUI_VARIANT"
   DO_UPLOAD="$TUI_UPLOAD"
+  [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
   [[ "$all" == 1 ]] && REQUESTED="all" || REQUESTED="$req"
 }
 
 # plain ask() flow, used when there is no terminal to draw on
 menu_ask() {
-  local v i short
+  local v i short xd
 
   say ""
   info "build variant"
@@ -751,6 +768,9 @@ menu_ask() {
   fi
 
   [[ "$(ask "upload to Buzzheavier?" "y")" =~ ^[Yy] ]] && DO_UPLOAD="yes" || DO_UPLOAD="no"
+
+  [[ -n "$WITH_XGSI_LOGS" ]] && xd="y" || xd="n"
+  [[ "$(ask "xgsi boot/dmesg logs?" "$xd")" =~ ^[Yy] ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
 }
 
 interactive_menu() {
@@ -878,6 +898,7 @@ main() {
   fi
   [[ "$NO_BUILD" == "yes" ]] && info "build    : skipped (--no-build)"
   [[ -n "$CCACHE_SIZE" ]] && info "ccache   : ${CCACHE_SIZE}"
+  [[ -n "$WITH_XGSI_LOGS" ]] && info "xgsi     : boot/dmesg logs on"
   info "devices  : $(for e in "${SELECTED[@]}"; do printf '%s ' "${e%%|*}"; done)"
   info "releases : ${RELEASE_ROOT#$ANDROID_ROOT/}/$VARIANT"
   say "======================================================================"
