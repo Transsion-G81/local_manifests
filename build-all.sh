@@ -64,6 +64,10 @@ NO_BUILD="no"
 NOTIFY_URL=""
 ANDROID_ROOT="${ANDROID_ROOT:-}"
 
+# LineageOS 23.x lunch() needs <product>-<release>-<variant>; the release (e.g.
+# bp4a) is not optional.  Empty = auto-detect from the tree's pin file.
+LUNCH_RELEASE="${LUNCH_RELEASE:-${TARGET_RELEASE:-}}"
+
 RELEASE_ROOT=""
 LOG_DIR=""
 declare -a BUILT=() FAILED=() LINKS=() SELECTED=() COLLECTED=()
@@ -114,6 +118,8 @@ Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
 
 Options:
   -v, --variant user|userdebug|eng   build variant (default: interactive TUI)
+      --release NAME                 lunch release config (e.g. bp4a); default
+                                     reads vendor/lineage/vars/aosp_target_release
   -d, --devices LIST                 all | X6531,X6531B,X6532,KL5,KL5n
   -u, --upload | --no-upload         upload to Buzzheavier (default: --no-upload)
   -a, --account ID                   Buzzheavier account id (else anonymous)
@@ -132,7 +138,7 @@ Options:
   -h, --help                         this text
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
-     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  MAKE_TARGET
+     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  MAKE_TARGET  TARGET_RELEASE
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
 
@@ -570,14 +576,35 @@ show_build_errors() {
   fi
 }
 
+# LineageOS 23.x lunch() wants a release config (bp4a, trunk_staging, ...) that is
+# not optional.  Prefer --release / TARGET_RELEASE, else the pin LineageOS ships
+# in vendor/lineage/vars/aosp_target_release (what its own breakfast uses), else
+# a release the tree lists for this product, else AOSP's default.
+resolve_release() {
+  local product="$1" f rel
+  if [[ -n "$LUNCH_RELEASE" ]]; then printf '%s' "$LUNCH_RELEASE"; return 0; fi
+  f="$ANDROID_ROOT/vendor/lineage/vars/aosp_target_release"
+  if [[ -r "$f" ]]; then
+    rel=$(sed -n 's/^[[:space:]]*aosp_target_release[[:space:]]*=[[:space:]]*\([A-Za-z0-9_.-]*\).*/\1/p' "$f" | tail -n1)
+    [[ -n "$rel" ]] && { printf '%s' "$rel"; return 0; }
+  fi
+  if declare -F list_releases >/dev/null 2>&1; then
+    rel=$(list_releases "$product" 2>/dev/null | tr ' \t' '\n\n' | grep -E '^[A-Za-z0-9_.-]+$' | head -n1)
+    [[ -n "$rel" ]] && { printf '%s' "$rel"; return 0; }
+  fi
+  printf '%s' 'trunk_staging'
+}
+
 run_build() {
   local product="$1" variant="$2" nfc="$3" devtree="$4" log="$5"
   local rc
 
+  [[ -n "$LUNCH_RELEASE" ]] || LUNCH_RELEASE="$(resolve_release "$product")"
+
   if [[ "$DRY_RUN" == "yes" ]]; then
     say "    cd $ANDROID_ROOT"
     say "    source build/envsetup.sh   (PATCH_NFC=$([[ "$nfc" == 1 ]] && echo true || echo unset))"
-    say "    lunch ${product}-${variant}"
+    say "    lunch ${product} ${LUNCH_RELEASE} ${variant}"
     say "    mka ${MAKE_TARGET}${JOBS:+ -j$JOBS}"
     return 0
   fi
@@ -598,7 +625,13 @@ run_build() {
   # shellcheck disable=SC1091
   source build/envsetup.sh >/dev/null
   rc=$?
-  if [[ "$rc" -eq 0 ]]; then lunch "${product}-${variant}"; rc=$?; fi
+  if [[ "$rc" -eq 0 ]]; then
+    lunch "$product" "$LUNCH_RELEASE" "$variant"; rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      warn "lunch $product $LUNCH_RELEASE $variant failed - pick the release with"
+      warn "   --release NAME (see vendor/lineage/vars/aosp_target_release)"
+    fi
+  fi
   if [[ "$rc" -eq 0 && "$nfc" == "1" ]]; then
     verify_nfc_patches "$devtree" || rc=1
   fi
@@ -903,6 +936,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -v|--variant)   VARIANT="${2:-}"; shift 2 ;;
+      --release)      LUNCH_RELEASE="${2:-}"; shift 2 ;;
       -d|--devices)   REQUESTED="${2:-}"; shift 2 ;;
       -u|--upload)
         DO_UPLOAD="yes"; shift
@@ -1006,8 +1040,13 @@ main() {
 
   setup_ccache
 
+  local first_product="${SELECTED[0]%%|*}"
+  LUNCH_RELEASE="$(resolve_release "$first_product")"
+  [[ -n "$LUNCH_RELEASE" ]] || die "could not determine a lunch release - pass --release NAME"
+
   say "======================================================================"
   info "variant  : $VARIANT"
+  info "release  : $LUNCH_RELEASE"
   info "root     : $ANDROID_ROOT"
   if [[ "$DO_UPLOAD" == "yes" ]]; then
     info "upload   : yes $([[ -n "$BUZZ_ACCOUNT_ID" ]] && echo "(account)" || echo "(anonymous)")"
