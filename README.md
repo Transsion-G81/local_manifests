@@ -44,6 +44,8 @@ WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 #      https://api.telegram.org/bot<TOKEN>/getUpdates
 ./build-all.sh -v userdebug -u yes --notify telegram:<TOKEN>:<CHAT_ID>
 
+# on a build failure the error tail is posted and the full build log is
+# uploaded to the chat as a file
 # ...or export them once and Telegram notify turns itself on
 export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 ./build-all.sh -v userdebug -u yes

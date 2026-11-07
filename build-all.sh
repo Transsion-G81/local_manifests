@@ -150,7 +150,8 @@ a tree that already built.
 Telegram: create a bot with @BotFather for the token, message the bot, then get
 your chat id (e.g. https://api.telegram.org/bot<TOKEN>/getUpdates).  Then use
 --notify telegram:<TOKEN>:<CHAT_ID> (or export TELEGRAM_BOT_TOKEN and
-TELEGRAM_CHAT_ID, which enables Telegram notify on its own).
+TELEGRAM_CHAT_ID, which enables Telegram notify on its own).  A build failure
+also posts the error tail and uploads the full build log to the chat.
 EOF
 }
 
@@ -496,6 +497,47 @@ notify() {
     ok "notified"
   else
     warn "notify failed"
+  fi
+}
+
+# On failure, put the build log in the chat.  Telegram gets the file itself
+# (sendDocument, <=50 MB) with the error tail as caption; a plain webhook can
+# only carry text, so it gets the tail.  Best effort, never fatal.
+notify_log() {
+  local file="$1" caption="${2:-build log}" tail url size
+  [[ -n "$NOTIFY_MODE" ]] || return 0
+  [[ -f "$file" ]] || return 0
+
+  tail=$(grep -nE 'FAILED:|error:|fatal error|ninja: build stopped' "$file" 2>/dev/null | tail -n 15)
+  [[ -n "$tail" ]] || tail=$(tail -n 15 "$file" 2>/dev/null)
+
+  if [[ "$NOTIFY_MODE" != "telegram" ]]; then
+    [[ -n "$NOTIFY_URL" ]] || return 0
+    notify "$caption
+$tail"
+    return 0
+  fi
+
+  [[ -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] || return 0
+  size=$(wc -c < "$file")
+  if (( size > 50 * 1024 * 1024 )); then
+    warn "log ${size}B is too big for Telegram - sending the error tail only"
+    notify "$caption
+$tail"
+    return 0
+  fi
+
+  if [[ "$DRY_RUN" == "yes" ]]; then info "notify-log (dry-run): $file"; return 0; fi
+  url="https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument"
+  if curl -sS -o /dev/null --max-time 180 \
+       -F "chat_id=$TELEGRAM_CHAT_ID" \
+       -F "caption=${caption:0:1000}" \
+       -F "document=@$file" "$url" 2>/dev/null; then
+    ok "notified (log: ${file##*/})"
+  else
+    warn "log upload failed - sending the error tail only"
+    notify "$caption
+$tail"
   fi
 }
 
@@ -1126,6 +1168,7 @@ main() {
       if ! run_build "$product" "$VARIANT" "$nfc" "$devtree" "$log"; then
         err "$product: build failed - log: ${log#$ANDROID_ROOT/}"
         show_build_errors "$log"
+        notify_log "$log" "tranG81 $VARIANT: $product build failed"
         FAILED+=("$product (build)")
         TIMING+=("$product|$(( $(date +%s) - t0 ))|0|build failed")
         [[ "$KEEP_GOING" == "yes" ]] || break
