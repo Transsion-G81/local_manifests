@@ -52,11 +52,8 @@ WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 # stamp tracks it) - no need to clean by hand.  GMS_MODES also works (comma
 # list or "all"); the mode is echoed in the TUI, the log name, the JSON and the
 # Telegram ping.
-# microG's vendor tree is given its own Soong namespace: the script drops
-# vendor/partner_gms/Android.bp and device.mk exports it under WITH_MICROG.
-# Needed because microG and MindTheGapps both define a Soong module named
-# GmsCore; in the default namespace microG's copy is exported on every build and
-# collides with gapps' copy on the gapps pass.
+# microG's tree gets a Soong namespace so its GmsCore doesn't clash with gapps'
+# GmsCore; build-all.sh drops vendor/partner_gms/Android.bp and device.mk exports it.
 #
 # status ping when the run ends - Telegram:
 #   1) create a bot with @BotFather and copy the token

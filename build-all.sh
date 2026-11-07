@@ -272,11 +272,7 @@ ensure_gms_out() {
   printf '%s' "$mode" > "$stamp"
 }
 
-# Soong: microG's vendor tree ships no soong_namespace, so its modules (GmsCore
-# and friends) land in Soong's always-exported root namespace and collide with
-# gapps' namespaced GmsCore on the gapps pass.  device.mk exports
-# vendor/partner_gms under WITH_MICROG; the namespace itself must live in the
-# tree.  The file is untracked, so a re-sync can drop it - recreate it here.
+# put microG's modules in their own namespace so gapps' GmsCore doesn't clash
 ensure_microg_namespace() {
   local dir="$ANDROID_ROOT/vendor/partner_gms" bp
   [[ -d "$dir" ]] || return 0
