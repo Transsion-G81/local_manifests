@@ -7,6 +7,10 @@
 # KL5n is last on purpose: its vendorsetup.sh applies the hardware/nxp/nfc
 # patches when PATCH_NFC=true, so it must run after the clean builds.
 #
+# Every selected device is built once per GMS mode, in the fixed order
+# vanilla -> gapps -> microg (microG always last): the mode selects a payload
+# from device.mk (vendor/gapps or vendor/partner_gms), never both.
+#
 # Run it from the root of the LineageOS source tree (the dir holding
 # build/envsetup.sh) or point ANDROID_ROOT at it:
 #
@@ -39,6 +43,9 @@ JOBS="${JOBS:-}"
 WITH_XGSI_LOGS="${WITH_XGSI_LOGS:-}"
 CCACHE_SIZE="${CCACHE_SIZE:-}"
 MIN_FREE_GB="${MIN_FREE_GB:-40}"
+# GMS passes per device, built in the fixed order vanilla -> gapps -> microg
+# (microG always last).  Comma list from vanilla|gapps|microg, or "all".
+GMS_MODES="${GMS_MODES:-vanilla}"
 
 # images collected and uploaded next to the ROM zip (tagged per product);
 # set EXTRA_IMAGES= to upload only the zip, add dtbo.img to include it.
@@ -72,6 +79,8 @@ RELEASE_ROOT=""
 LOG_DIR=""
 declare -a BUILT=() FAILED=() LINKS=() SELECTED=() COLLECTED=()
 declare -a TIMING=() DIRTY=() REL_JSON=() LINK_BLOCKS=()
+declare -a GMS_WANT=() GMS_MODE_LIST=()
+GMS_MODE="" RELEASE_MODE_DIR=""
 
 # filled in by bh_upload() for the caller
 LAST_URL="" LAST_SHA256="" LAST_EXPIRY="" UPLOADED=0 EXPIRY_WARNED="no"
@@ -137,10 +146,16 @@ Options:
       --keep-going                   keep building the rest after a failure
       --dry-run                      print the plan, touch nothing
       --check-only                   run the firmware safety checks and stop
+      --gms MODES                    GMS passes per device: vanilla (default),
+                                     vanilla,gapps, vanilla,microg, or all
+                                     (= vanilla,gapps,microg).  Built in that
+                                     fixed order; microG is always last.
+      --gapps                        shorthand for --gms vanilla,gapps
+      --microg                       shorthand for --gms vanilla,microg
   -h, --help                         this text
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
-     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  MAKE_TARGET  TARGET_RELEASE
+     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  GMS_MODES  MAKE_TARGET  TARGET_RELEASE
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
 
@@ -148,6 +163,18 @@ WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
 product-config time, so clear out/target/product/<device> before toggling it on
 a tree that already built.
+
+GMS modes: every selected device is built once per mode, in the fixed order
+vanilla -> gapps -> microg.  vanilla is stock LineageOS; gapps bakes
+MindTheGapps (vendor/gapps); microg bakes microG (vendor/partner_gms - LineageOS
+already ships microG-only signature spoofing, so no frameworks patch is needed).
+gapps and microG are mutually exclusive.  Both are read from device.mk at
+product-config time, so the product out dir is cleared when the mode changes (a
+per-product .trang81-gms stamp tracks it).  Artifacts land in
+out/tranG81-releases/<variant>/<mode>/ and non-vanilla zips get a -GAPPS/-MICROG
+suffix; boot images are collected on the vanilla pass only (identical across
+modes).  The menu has a GMS row (keys g / left / right) to pick vanilla, +gapps,
++microG or all three.
 
 Telegram: create a bot with @BotFather for the token, message the bot, then get
 your chat id (e.g. https://api.telegram.org/bot<TOKEN>/getUpdates).  Then use
@@ -175,6 +202,74 @@ json_str() {
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
   s="${s//$'\t'/\\t}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"
   printf '"%s"' "$s"
+}
+
+# ------------------------------------------------------------------- gms ----
+
+# fold a requested mode list (comma/space separated, repeated) into the fixed
+# build order vanilla -> gapps -> microg, de-duplicated.  "all" = the three
+# passes, "none"/"vanilla" = the vanilla pass only.  (gapps/microG build on top
+# of the LineageOS base, so vanilla is always kept.)  Sets GMS_MODE_LIST.
+normalize_gms() {
+  local t
+  local -a src=() part=()
+  local -A sel=()
+  for t in "$@"; do
+    part=()
+    IFS=', ' read -r -a part <<<"$t"
+    src+=("${part[@]+"${part[@]}"}")
+  done
+  for t in "${src[@]+"${src[@]}"}"; do
+    [[ -n "$t" ]] || continue
+    case "$t" in
+      all)          sel[vanilla]=1; sel[gapps]=1; sel[microg]=1 ;;
+      none|vanilla) sel[vanilla]=1 ;;
+      gapps)        sel[gapps]=1 ;;
+      microg)       sel[microg]=1 ;;
+      *)            die "bad --gms value '$t' (use vanilla|gapps|microg|all)" ;;
+    esac
+  done
+  # gapps/microG are baked on top of the LineageOS base, so the vanilla pass is
+  # always kept (and always runs first).
+  sel[vanilla]=1
+  GMS_MODE_LIST=()
+  for t in vanilla gapps microg; do
+    [[ -n "${sel[$t]:-}" ]] && GMS_MODE_LIST+=("$t")
+  done
+  [[ ${#GMS_MODE_LIST[@]} -gt 0 ]] || GMS_MODE_LIST=(vanilla)
+}
+
+# export the env device.mk reads to pick the GMS payload for this pass.
+set_gms_env() {
+  unset WITH_GAPPS WITH_MICROG
+  case "$1" in
+    gapps)  export WITH_GAPPS=true ;;
+    microg) export WITH_MICROG=true ;;
+  esac
+}
+
+# upper-case tag used for artifact suffixes.
+gms_label() { case "$1" in gapps) echo GAPPS ;; microg) echo MICROG ;; *) echo vanilla ;; esac; }
+
+# device.mk reads WITH_GAPPS/WITH_MICROG at product-config time, so a product
+# built in another mode must be re-configured from scratch.  Stamp each product
+# out dir with the mode it was built for and wipe it when that changes.  A
+# missing stamp counts as vanilla, so an existing non-GMS out survives the first
+# vanilla pass without a full rebuild.
+ensure_gms_out() {
+  local device="$1" mode="$2" out stamp cur
+  out="$ANDROID_ROOT/out/target/product/$device"
+  stamp="$out/.trang81-gms"
+  [[ -d "$out" ]] || return 0
+  cur=""
+  [[ -r "$stamp" ]] && cur="$(<"$stamp")"
+  [[ -n "$cur" ]] || cur="vanilla"
+  if [[ "$cur" != "$mode" ]]; then
+    info "$device: gms mode '$cur' -> '$mode' - clearing out/target/product/$device"
+    rm -rf "$out" || return 1
+  fi
+  mkdir -p "$out" || return 1
+  printf '%s' "$mode" > "$stamp"
 }
 
 # -------------------------------------------------------------- preflight ----
@@ -676,13 +771,18 @@ resolve_release() {
 
 run_build() {
   local product="$1" variant="$2" nfc="$3" devtree="$4" log="$5"
-  local rc
+  local rc gmsenv=""
 
   [[ -n "$LUNCH_RELEASE" ]] || LUNCH_RELEASE="$(resolve_release "$product")"
 
+  # device.mk reads these at product-config time to pick the GMS payload.
+  set_gms_env "$GMS_MODE"
+  [[ "$GMS_MODE" == gapps ]]  && gmsenv="WITH_GAPPS=true"
+  [[ "$GMS_MODE" == microg ]] && gmsenv="WITH_MICROG=true"
+
   if [[ "$DRY_RUN" == "yes" ]]; then
     say "    cd $ANDROID_ROOT"
-    say "    source build/envsetup.sh   (PATCH_NFC=$([[ "$nfc" == 1 ]] && echo true || echo unset))"
+    say "    source build/envsetup.sh   (PATCH_NFC=$([[ "$nfc" == 1 ]] && echo true || echo unset)${gmsenv:+ $gmsenv})"
     say "    lunch ${product} ${LUNCH_RELEASE} ${variant}"
     say "    mka ${MAKE_TARGET}${JOBS:+ -j$JOBS}"
     return 0
@@ -732,11 +832,15 @@ run_build() {
 collect_artifacts() {
   local device="$1" product="$2" variant="$3"
   local out="$ANDROID_ROOT/out/target/product/$device"
-  local tag stem dest zip img name
+  local dir="$RELEASE_ROOT/$variant/$GMS_MODE"
+  local tag stem dest zip img name msuf
   COLLECTED=()
 
   tag="${product#lineage_}"
-  mkdir -p "$RELEASE_ROOT/$variant" || return 1
+  mkdir -p "$dir" || return 1
+
+  msuf=""
+  [[ "$GMS_MODE" != vanilla ]] && msuf="-$(gms_label "$GMS_MODE")"
 
   zip=$(ls -1t "$out"/lineage*.zip 2>/dev/null | head -n1)
   if [[ -z "$zip" || ! -f "$zip" ]]; then
@@ -745,22 +849,25 @@ collect_artifacts() {
   fi
   stem="$(basename "$zip")"; stem="${stem%.zip}"
   case "$stem" in
-    *"$tag"*) dest="$stem.zip" ;;
-    *)        dest="${stem}-${tag}.zip" ;;
+    *"$tag"*) dest="${stem}${msuf}.zip" ;;
+    *)        dest="${stem}-${tag}${msuf}.zip" ;;
   esac
-  cp -f "$zip" "$RELEASE_ROOT/$variant/$dest" || return 1
-  COLLECTED+=("$RELEASE_ROOT/$variant/$dest")
+  cp -f "$zip" "$dir/$dest" || return 1
+  COLLECTED+=("$dir/$dest")
 
-  # boot.img / vendor_boot.img (both products of a shared out dir write the
-  # same file name there, so tag every copy with the product).
+  # boot.img / vendor_boot.img carry no system apps, so they are identical
+  # across GMS modes - collect them on the vanilla pass only, else the same file
+  # would be uploaded once per mode.  (Both products of a shared out dir write
+  # the same file name there, so tag every copy with the product.)
+  [[ "$GMS_MODE" == vanilla ]] || return 0
   for img in $EXTRA_IMAGES; do
     if [[ ! -f "$out/$img" ]]; then
       warn "$img not produced for $product - skipped"
       continue
     fi
     name="${img%.img}-${tag}.img"
-    cp -f "$out/$img" "$RELEASE_ROOT/$variant/$name" || return 1
-    COLLECTED+=("$RELEASE_ROOT/$variant/$name")
+    cp -f "$out/$img" "$dir/$name" || return 1
+    COLLECTED+=("$dir/$name")
   done
 }
 
@@ -768,7 +875,7 @@ collect_artifacts() {
 collect_existing() {
   local product="$1" variant="$2"
   local tag="${product#lineage_}"
-  local dir="$RELEASE_ROOT/$variant" f
+  local dir="$RELEASE_ROOT/$variant/$GMS_MODE" f
   COLLECTED=()
   if [[ ! -d "$dir" ]]; then
     err "no release dir $dir - build once, or point at the right --variant"
@@ -789,12 +896,13 @@ collect_existing() {
   return 0
 }
 
-# accumulate one device object for releases-<variant>.json.
-# args: product sysdev elapsed status then "name|url|sha256|expiry" ...
+# accumulate one device/mode object for releases-<variant>.json.
+# args: product mode sysdev elapsed status then "name|url|sha256|expiry" ...
 add_json_record() {
-  local product="$1" sysdev="$2" elapsed="$3" status="$4"; shift 4
+  local product="$1" mode="$2" sysdev="$3" elapsed="$4" status="$5"; shift 5
   local rec f name url sha exp first=1
-  rec="    {\"product\":$(json_str "$product"),\"system_device\":$(json_str "$sysdev")"
+  rec="    {\"product\":$(json_str "$product"),\"gms_mode\":$(json_str "$mode")"
+  rec+=",\"system_device\":$(json_str "$sysdev")"
   rec+=",\"elapsed_seconds\":${elapsed},\"status\":$(json_str "$status"),\"files\":["
   for f in "$@"; do
     IFS='|' read -r name url sha exp <<<"$f"
@@ -817,9 +925,12 @@ TUI_FOCUS=0
 TUI_VARIANT="user"
 TUI_UPLOAD="yes"
 TUI_XGSI="no"
+TUI_GMS=0
 TUI_STATUS=""
 TUI_STTY=""
 TUI_VARIANTS=(user userdebug eng)
+TUI_GMS_MODES=(vanilla "vanilla,gapps" "vanilla,microg" "vanilla,gapps,microg")
+TUI_GMS_LABELS=(vanilla "vanilla+gapps" "vanilla+microg" "all (3)")
 declare -a TUI_SEL=()
 
 tui_cleanup() {
@@ -857,6 +968,7 @@ tui_key() {
     n|N)  printf 'none' ;;
     u|U)  printf 'upload' ;;
     x|X)  printf 'xgsi' ;;
+    g|G)  printf 'gms' ;;
     *)    printf 'noop' ;;
   esac
 }
@@ -906,19 +1018,24 @@ tui_render() {
   [[ "$TUI_XGSI" == "yes" ]] && row+="[x] " || row+="[ ] "
   (( TUI_FOCUS == n + 2 )) && row+="${c_bold}xgsi boot/dmesg logs${c_reset}" || row+="xgsi boot/dmesg logs"
   printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 3)))"
+  row+="gms  "
+  (( TUI_FOCUS == n + 3 )) && row+="${c_bold}< ${TUI_GMS_LABELS[$TUI_GMS]} >${c_reset}" || row+="< ${TUI_GMS_LABELS[$TUI_GMS]} >"
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
-  printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant   %sa%s all   %sn%s none\033[K\n' \
+  printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant/gms   %sa%s all   %sn%s none\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
-  printf '   %sx%s xgsi   %senter%s start   %sq%s quit\033[K\n' \
-    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
+  printf '   %sx%s xgsi   %sg%s gms   %senter%s start   %sq%s quit\033[K\n' \
+    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
   [[ -n "$TUI_STATUS" ]] && printf '   %s%s%s\033[K\n' "$c_yel" "$TUI_STATUS" "$c_reset" || printf '\033[K\n'
   printf '\033[J'
 }
 
 tui_run() {
   local n=${#DEVICES[@]} i key short req="" all=1 any
-  TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"
+  TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0
   TUI_SEL=()
   for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done
   [[ -n "${VARIANT:-}" ]] && TUI_VARIANT="$VARIANT"
@@ -935,17 +1052,23 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 2 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 3 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
-        (( TUI_FOCUS == 0 )) && { [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1; } ;;
+        if   (( TUI_FOCUS == 0 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
+        elif (( TUI_FOCUS == n + 3 )); then
+          if [[ "$key" == left ]]; then TUI_GMS=$(((TUI_GMS + ${#TUI_GMS_MODES[@]} - 1) % ${#TUI_GMS_MODES[@]}))
+          else TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]})); fi
+        fi ;;
       space)
         if   (( TUI_FOCUS == 0 ));     then tui_cycle 1
         elif (( TUI_FOCUS == n + 1 )); then [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes"
         elif (( TUI_FOCUS == n + 2 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
+        elif (( TUI_FOCUS == n + 3 )); then TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]}))
         else TUI_SEL[TUI_FOCUS - 1]=$((1 - TUI_SEL[TUI_FOCUS - 1]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
       xgsi)   [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes" ;;
+      gms)    TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]})) ;;
       all)  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done ;;
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
@@ -968,6 +1091,7 @@ tui_run() {
   VARIANT="$TUI_VARIANT"
   DO_UPLOAD="$TUI_UPLOAD"
   [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
+  GMS_WANT=("${TUI_GMS_MODES[$TUI_GMS]}")
   [[ "$all" == 1 ]] && REQUESTED="all" || REQUESTED="$req"
 }
 
@@ -996,6 +1120,19 @@ menu_ask() {
   fi
 
   [[ "$(ask "upload to Buzzheavier?" "y")" =~ ^[Yy] ]] && DO_UPLOAD="yes" || DO_UPLOAD="no"
+
+  say ""
+  info "gms modes"
+  select gm in "vanilla only" "vanilla + gapps" "vanilla + microG" "all 3 (vanilla + gapps + microG)"; do
+    [[ -n "${gm:-}" ]] && break
+    warn "pick 1, 2, 3 or 4"
+  done
+  case "$gm" in
+    "vanilla + gapps")  GMS_WANT=(vanilla,gapps) ;;
+    "vanilla + microG") GMS_WANT=(vanilla,microg) ;;
+    "all 3 (vanilla + gapps + microG)") GMS_WANT=(all) ;;
+    *)                  GMS_WANT=(vanilla) ;;
+  esac
 
   [[ -n "$WITH_XGSI_LOGS" ]] && xd="y" || xd="n"
   [[ "$(ask "xgsi boot/dmesg logs?" "$xd")" =~ ^[Yy] ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
@@ -1031,6 +1168,9 @@ parse_args() {
       --notify)       parse_notify "${2:-}"; shift 2 ;;
       --telegram)     parse_notify "telegram:${2:-}"; shift 2 ;;
       --min-free)     MIN_FREE_GB="${2:-}"; shift 2 ;;
+      --gms)          GMS_WANT+=("${2:-}"); shift 2 ;;
+      --gapps)        GMS_WANT+=(gapps); shift ;;
+      --microg)       GMS_WANT+=(microg); shift ;;
       --keep-going)   KEEP_GOING="yes"; shift ;;
       --dry-run)      DRY_RUN="yes"; shift ;;
       --check-only)   CHECK_ONLY="yes"; shift ;;
@@ -1113,6 +1253,10 @@ main() {
 
   select_devices "$REQUESTED"
 
+  # fold --gms/env into the fixed vanilla -> gapps -> microg build order.
+  [[ ${#GMS_WANT[@]} -gt 0 ]] || GMS_WANT=("$GMS_MODES")
+  normalize_gms "${GMS_WANT[@]+"${GMS_WANT[@]}"}"
+
   RELEASE_ROOT="$ANDROID_ROOT/out/tranG81-releases"
   LOG_DIR="$ANDROID_ROOT/out/tranG81-logs"
   mkdir -p "$RELEASE_ROOT/$VARIANT" "$LOG_DIR"
@@ -1135,9 +1279,10 @@ main() {
   [[ "$NO_BUILD" == "yes" ]] && info "build    : skipped (--no-build)"
   [[ -n "$CCACHE_SIZE" ]] && info "ccache   : ${CCACHE_SIZE}"
   [[ -n "$WITH_XGSI_LOGS" ]] && info "xgsi     : boot/dmesg logs on"
+  info "gms      : $(printf '%s ' "${GMS_MODE_LIST[@]}")"
   [[ -n "$NOTIFY_MODE" ]] && info "notify   : $NOTIFY_MODE"
   info "devices  : $(for e in "${SELECTED[@]}"; do printf '%s ' "${e%%|*}"; done)"
-  info "releases : ${RELEASE_ROOT#$ANDROID_ROOT/}/$VARIANT"
+  info "releases : ${RELEASE_ROOT#$ANDROID_ROOT/}/$VARIANT/<mode>"
   say "======================================================================"
 
   if [[ "$DRY_RUN" != "yes" && "$CHECK_ONLY" != "yes" && "$NO_BUILD" != "yes" ]]; then
@@ -1148,8 +1293,16 @@ main() {
   RUN_START=$(date +%s)
 
   local entry product devtree vendortree device sysdev radiodir fp nfc log a name rzip
-  local idx=0 total=${#SELECTED[@]} t0 dt status
+  local idx=0 total=${#SELECTED[@]} t0 dt status mode
   local -a pf
+
+  for mode in "${GMS_MODE_LIST[@]}"; do
+  GMS_MODE="$mode"
+  RELEASE_MODE_DIR="$RELEASE_ROOT/$VARIANT/$mode"
+  mkdir -p "$RELEASE_MODE_DIR"
+  say ""
+  info "########## GMS mode: $mode  (${#SELECTED[@]} device(s)) ##########"
+  idx=0
 
   for entry in "${SELECTED[@]}"; do
     idx=$((idx + 1))
@@ -1162,8 +1315,8 @@ main() {
     if ! verify_trees "$product" "$devtree" "$vendortree" "$device" "$radiodir"; then
       err "$product: firmware / tree check failed - refusing to build"
       FAILED+=("$product (firmware check)")
-      TIMING+=("$product|-|0|firmware")
-      [[ "$KEEP_GOING" == "yes" ]] || break
+      TIMING+=("$product|$GMS_MODE|-|0|firmware")
+      [[ "$KEEP_GOING" == "yes" ]] || break 2
       continue
     fi
 
@@ -1177,9 +1330,9 @@ main() {
 
     if [[ "$DRY_RUN" == "yes" ]]; then
       if [[ "$NO_BUILD" == "yes" ]]; then
-        say "    --no-build: reuse + upload the artifacts in ${RELEASE_ROOT#$ANDROID_ROOT/}/$VARIANT"
+        say "    --no-build: reuse + upload the artifacts in ${RELEASE_ROOT#$ANDROID_ROOT/}/$VARIANT/$GMS_MODE"
       else
-        run_build "$product" "$VARIANT" "$nfc" "$devtree" "$LOG_DIR/$product-$VARIANT.log"
+        run_build "$product" "$VARIANT" "$nfc" "$devtree" "$LOG_DIR/$product-$VARIANT-$GMS_MODE.log"
       fi
       say "    -> verify rom, collect zip + $EXTRA_IMAGES, upload each"
       continue
@@ -1191,33 +1344,42 @@ main() {
     if [[ "$NO_BUILD" == "yes" ]]; then
       if ! collect_existing "$product" "$VARIANT"; then
         err "$product: nothing to re-upload"
-        FAILED+=("$product (no artifacts)")
-        TIMING+=("$product|-|0|collect")
-        [[ "$KEEP_GOING" == "yes" ]] || break
+        FAILED+=("$product [$GMS_MODE] (no artifacts)")
+        TIMING+=("$product|$GMS_MODE|-|0|collect")
+        [[ "$KEEP_GOING" == "yes" ]] || break 2
         continue
       fi
     else
+      # dropping to a different GMS mode needs a fresh product configuration
+      if ! ensure_gms_out "$device" "$GMS_MODE"; then
+        err "$product: could not prepare out/target/product/$device"
+        FAILED+=("$product [$GMS_MODE] (out dir)")
+        TIMING+=("$product|$GMS_MODE|$(( $(date +%s) - t0 ))|0|out dir failed")
+        [[ "$KEEP_GOING" == "yes" ]] || break 2
+        continue
+      fi
+
       # drop stale artifacts so collection cannot grab the previous product's output
       rm -f "$ANDROID_ROOT"/out/target/product/"$device"/lineage*.zip
       for a in $EXTRA_IMAGES; do rm -f "$ANDROID_ROOT/out/target/product/$device/$a"; done
 
-      log="$LOG_DIR/$product-$VARIANT.log"
+      log="$LOG_DIR/$product-$VARIANT-$GMS_MODE.log"
       if ! run_build "$product" "$VARIANT" "$nfc" "$devtree" "$log"; then
         err "$product: build failed - log: ${log#$ANDROID_ROOT/}"
         show_build_errors "$log"
-        notify_log "$log" "tranG81 $VARIANT: $product build failed"
-        FAILED+=("$product (build)")
-        TIMING+=("$product|$(( $(date +%s) - t0 ))|0|build failed")
-        [[ "$KEEP_GOING" == "yes" ]] || break
+        notify_log "$log" "tranG81 $VARIANT: $product [$GMS_MODE] build failed"
+        FAILED+=("$product [$GMS_MODE] (build)")
+        TIMING+=("$product|$GMS_MODE|$(( $(date +%s) - t0 ))|0|build failed")
+        [[ "$KEEP_GOING" == "yes" ]] || break 2
         continue
       fi
       ok "$product: built"
 
       if ! verify_rom "$device" "$fp"; then
         err "$product: ROM firmware does not match - NOT uploading"
-        FAILED+=("$product (rom fingerprint)")
-        TIMING+=("$product|$(( $(date +%s) - t0 ))|0|rom mismatch")
-        [[ "$KEEP_GOING" == "yes" ]] || break
+        FAILED+=("$product [$GMS_MODE] (rom fingerprint)")
+        TIMING+=("$product|$GMS_MODE|$(( $(date +%s) - t0 ))|0|rom mismatch")
+        [[ "$KEEP_GOING" == "yes" ]] || break 2
         continue
       fi
 
@@ -1226,17 +1388,17 @@ main() {
       rzip=$(ls -1t "$ANDROID_ROOT/out/target/product/$device"/lineage*.zip 2>/dev/null | head -n1)
       if ! verify_zip_radio "$rzip" "$vendortree" "$radiodir"; then
         err "$product: produced rom carries the wrong radio firmware - NOT uploading"
-        FAILED+=("$product (rom radio mismatch)")
-        TIMING+=("$product|$(( $(date +%s) - t0 ))|0|rom radio mismatch")
-        [[ "$KEEP_GOING" == "yes" ]] || break
+        FAILED+=("$product [$GMS_MODE] (rom radio mismatch)")
+        TIMING+=("$product|$GMS_MODE|$(( $(date +%s) - t0 ))|0|rom radio mismatch")
+        [[ "$KEEP_GOING" == "yes" ]] || break 2
         continue
       fi
 
       if ! collect_artifacts "$device" "$product" "$VARIANT"; then
         err "$product: could not collect the build artifacts"
-        FAILED+=("$product (no artifacts)")
-        TIMING+=("$product|$(( $(date +%s) - t0 ))|0|collect failed")
-        [[ "$KEEP_GOING" == "yes" ]] || break
+        FAILED+=("$product [$GMS_MODE] (no artifacts)")
+        TIMING+=("$product|$GMS_MODE|$(( $(date +%s) - t0 ))|0|collect failed")
+        [[ "$KEEP_GOING" == "yes" ]] || break 2
         continue
       fi
     fi
@@ -1251,11 +1413,11 @@ main() {
       for a in "${COLLECTED[@]}"; do
         name="$(basename "$a")"
         if bh_upload "$a" "$name" \
-             "tranG81 $product $VARIANT $sysdev $(date -u +%Y-%m-%dT%H:%MZ)"; then
+             "tranG81 $product $GMS_MODE $VARIANT $sysdev $(date -u +%Y-%m-%dT%H:%MZ)"; then
           pf+=("$name|$LAST_URL|$LAST_SHA256|$LAST_EXPIRY")
         else
           warn "$product: upload failed for $name"
-          FAILED+=("$product ($name)")
+          FAILED+=("$product [$GMS_MODE] ($name)")
           status=failed
           pf+=("$name|||$LAST_EXPIRY")
         fi
@@ -1265,12 +1427,12 @@ main() {
     fi
 
     dt=$(( $(date +%s) - t0 ))
-    TIMING+=("$product|$dt|${#COLLECTED[@]}|$status")
-    add_json_record "$product" "$sysdev" "$dt" "$status" "${pf[@]}"
+    TIMING+=("$product|$GMS_MODE|$dt|${#COLLECTED[@]}|$status")
+    add_json_record "$product" "$GMS_MODE" "$sysdev" "$dt" "$status" "${pf[@]+"${pf[@]}"}"
 
     # human-readable link block for the notify (per product, per file/category)
     if [[ ${#pf[@]} -gt 0 ]]; then
-      local blk="$product  ($sysdev)  $status" fent fname furl fcat
+      local blk="$product  [$GMS_MODE]  ($sysdev)  $status" fent fname furl fcat
       for fent in "${pf[@]}"; do
         IFS='|' read -r fname furl _ <<<"$fent"
         fcat=$(link_category "$fname")
@@ -1289,15 +1451,16 @@ main() {
       info "$product done in $(human_time "$dt")  ($idx/$total, ~$(human_time "$eta") left)"
     fi
   done
+  done
 
   say ""
   say "============================== summary ==============================="
   if [[ ${#TIMING[@]} -gt 0 ]]; then
     info "timing:"
-    local p2
+    local p2 m
     for entry in "${TIMING[@]}"; do
-      IFS='|' read -r p2 dt a status <<<"$entry"
-      say "   $(printf '%-14s' "$p2") $(printf '%9s' "$([[ "$dt" == "-" ]] && echo - || human_time "$dt")")  ${a} file(s)  $status"
+      IFS='|' read -r p2 m dt a status <<<"$entry"
+      say "   $(printf '%-14s' "$p2") $(printf '%-6s' "$m") $(printf '%9s' "$([[ "$dt" == "-" ]] && echo - || human_time "$dt")")  ${a} file(s)  $status"
     done
   fi
 
@@ -1311,10 +1474,12 @@ main() {
   fi
 
   if [[ ${#REL_JSON[@]} -gt 0 ]]; then
-    local jf="$RELEASE_ROOT/releases-$VARIANT.json" first=1 r
+    local jf="$RELEASE_ROOT/releases-$VARIANT.json" first=1 r m gm=""
+    for m in "${GMS_MODE_LIST[@]}"; do gm+="${gm:+, }$(json_str "$m")"; done
     {
       printf '{\n'
       printf '  "variant": %s,\n' "$(json_str "$VARIANT")"
+      printf '  "gms_modes": [%s],\n' "$gm"
       printf '  "root": %s,\n' "$(json_str "$ANDROID_ROOT")"
       printf '  "generated": %s,\n' "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
       printf '  "devices": [\n'
