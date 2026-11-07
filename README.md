@@ -67,6 +67,10 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 ./build-all.sh --dry-run         # print the plan, touch nothing
 ./build-all.sh --min-free 60     # refuse to start below 60G free
 
+# LineageOS 23.x lunch wants a release config; the script reads it from
+# vendor/lineage/vars/aosp_target_release (e.g. bp4a) and you can override it:
+./build-all.sh -v userdebug --release bp4a
+
 # all options
 ./build-all.sh --help
 
