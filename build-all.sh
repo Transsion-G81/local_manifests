@@ -71,7 +71,7 @@ LUNCH_RELEASE="${LUNCH_RELEASE:-${TARGET_RELEASE:-}}"
 RELEASE_ROOT=""
 LOG_DIR=""
 declare -a BUILT=() FAILED=() LINKS=() SELECTED=() COLLECTED=()
-declare -a TIMING=() DIRTY=() REL_JSON=()
+declare -a TIMING=() DIRTY=() REL_JSON=() LINK_BLOCKS=()
 
 # filled in by bh_upload() for the caller
 LAST_URL="" LAST_SHA256="" LAST_EXPIRY="" UPLOADED=0 EXPIRY_WARNED="no"
@@ -113,7 +113,9 @@ every build it re-checks that the produced ROM zip carries that product's own
 radio images (by content sha1), then collects the ROM zip plus
 boot.img/vendor_boot.img (put more in EXTRA_IMAGES, e.g. dtbo.img) and uploads
 them; each upload is sha256-verified against the hash the service reports, and
-the expiry is printed (anonymous links expire in a few days).
+the expiry is printed (anonymous links expire in a few days).  With Telegram
+notify, a second message lists the download link of every uploaded file,
+grouped per device and tagged rom / boot / vendor_boot / image.
 Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
 
 Options:
@@ -150,8 +152,9 @@ a tree that already built.
 Telegram: create a bot with @BotFather for the token, message the bot, then get
 your chat id (e.g. https://api.telegram.org/bot<TOKEN>/getUpdates).  Then use
 --notify telegram:<TOKEN>:<CHAT_ID> (or export TELEGRAM_BOT_TOKEN and
-TELEGRAM_CHAT_ID, which enables Telegram notify on its own).  A build failure
-also posts the error tail and uploads the full build log to the chat.
+TELEGRAM_CHAT_ID, which enables Telegram notify on its own).  On success it
+also posts the per-file download links (grouped per device / category); a
+build failure posts the error tail and uploads the full build log to the chat.
 EOF
 }
 
@@ -539,6 +542,40 @@ $tail"
     notify "$caption
 $tail"
   fi
+}
+
+# classify an uploaded file for the link notification.
+link_category() {
+  case "$1" in
+    *.zip)             echo rom ;;
+    vendor_boot-*.img) echo vendor_boot ;;
+    boot-*.img)        echo boot ;;
+    *.img)             echo image ;;
+    *)                 echo file ;;
+  esac
+}
+
+# Send the download link of every uploaded file, grouped per product and
+# tagged by category (rom / boot / vendor_boot / image).  Telegram caps a
+# message at 4096 chars, so whole per-product blocks are packed into as few
+# messages as possible.  Best effort, never fatal.
+notify_links() {
+  local header="tranG81 $VARIANT - download links (${#LINK_BLOCKS[@]} product(s)):"
+  [[ -n "$NOTIFY_MODE" && ${#LINK_BLOCKS[@]} -gt 0 ]] || return 0
+
+  local b msg all=""
+  if [[ "$NOTIFY_MODE" != "telegram" ]]; then
+    for b in "${LINK_BLOCKS[@]}"; do all+="$header"$'\n'"$b"$'\n'; header=""; done
+    [[ -n "$all" ]] && notify "$all"
+    return 0
+  fi
+
+  msg="$header"
+  for b in "${LINK_BLOCKS[@]}"; do
+    if (( ${#msg} + ${#b} + 1 > 3900 )); then notify "$msg"; msg="$b";
+    else msg+=$'\n'"$b"; fi
+  done
+  [[ -n "$msg" ]] && notify "$msg"
 }
 
 # --notify accepts a webhook URL, "telegram", "telegram:TOKEN:CHAT", or a
@@ -1231,6 +1268,21 @@ main() {
     TIMING+=("$product|$dt|${#COLLECTED[@]}|$status")
     add_json_record "$product" "$sysdev" "$dt" "$status" "${pf[@]}"
 
+    # human-readable link block for the notify (per product, per file/category)
+    if [[ ${#pf[@]} -gt 0 ]]; then
+      local blk="$product  ($sysdev)  $status" fent fname furl fcat
+      for fent in "${pf[@]}"; do
+        IFS='|' read -r fname furl _ <<<"$fent"
+        fcat=$(link_category "$fname")
+        if [[ -n "$furl" ]]; then
+          blk+=$'\n'"   [$fcat] $fname"$'\n'"      $furl"
+        else
+          blk+=$'\n'"   [$fcat] $fname  (no link)"
+        fi
+      done
+      LINK_BLOCKS+=("$blk")
+    fi
+
     if (( total > 1 && idx < total )); then
       local el=$(( $(date +%s) - RUN_START ))
       local eta=$(( el / idx * (total - idx) ))
@@ -1285,10 +1337,12 @@ main() {
     err "failed: ${#FAILED[@]}"
     for entry in "${FAILED[@]}"; do say "   $entry"; done
     notify "tranG81 $VARIANT: ${#BUILT[@]} artifact(s), ${#FAILED[@]} failure(s) - ${FAILED[*]}"
+    notify_links
     exit 1
   fi
   ok "all done"
   notify "tranG81 $VARIANT: done, ${#BUILT[@]} artifact(s), ${#LINKS[@]} link(s), $(human_time $(( $(date +%s) - RUN_START )))"
+  notify_links
 }
 
 main "$@"
