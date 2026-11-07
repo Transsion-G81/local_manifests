@@ -3,19 +3,25 @@
 # tranG81 - build + release every device, then upload the ROM zip plus
 # boot.img and vendor_boot.img of each device to Buzzheavier.
 #
+# The ROM is chosen with --rom (default lineage); a profile supplies the
+# product prefix, artifact name, supported GMS modes and who provides the
+# GApps/microG payload.  LineageOS uses our own device.mk gate (vendor/gapps,
+# vendor/partner_gms); other ROMs keep their own GApps/microG integration and
+# the script only flips their switch.
+#
 # Fixed order:  X6531 -> X6531B -> X6532 -> KL5 -> KL5n
 # KL5n is last on purpose: its vendorsetup.sh applies the hardware/nxp/nfc
 # patches when PATCH_NFC=true, so it must run after the clean builds.
 #
 # Every selected device is built once per GMS mode, in the fixed order
 # vanilla -> gapps -> microg (microG always last): the mode selects a payload
-# from device.mk (vendor/gapps or vendor/partner_gms), never both.
+# (vendor/gapps or vendor/partner_gms), never both.
 #
-# Run it from the root of the LineageOS source tree (the dir holding
+# Run it from the root of the ROM source tree (the dir holding
 # build/envsetup.sh) or point ANDROID_ROOT at it:
 #
 #     ./build-all.sh                       # interactive TUI menu
-#     ./build-all.sh -v userdebug -u yes    # non-interactive
+#     ./build-all.sh --rom yaap -v userdebug -u yes
 #     ANDROID_ROOT=~/lineage ./build-all.sh
 #
 # Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
@@ -47,17 +53,34 @@ MIN_FREE_GB="${MIN_FREE_GB:-40}"
 # (microG always last).  Comma list from vanilla|gapps|microg, or "all".
 GMS_MODES="${GMS_MODES:-vanilla}"
 
+# custom-ROM profile (--rom); rom_load() fills these in and apply_rom() turns
+# the device keys above into full product names.
+ROM="${ROM:-lineage}"
+ROM_NAME=""
+ROM_PREFIX=""
+ROM_ZIP_GLOB=""
+ROM_MODES=""
+ROM_GMS_OWNER=""
+ROM_GMS_VARS=""
+ROM_GMS_ENV_vanilla=""
+ROM_GMS_ENV_gapps=""
+ROM_GMS_ENV_microg=""
+ROM_RELEASE_FILE=""
+ROM_RELEASE_CMD=""
+ROM_LUNCH_STYLE=""
+
 # images collected and uploaded next to the ROM zip (tagged per product);
 # set EXTRA_IMAGES= to upload only the zip, add dtbo.img to include it.
 EXTRA_IMAGES="${EXTRA_IMAGES-boot.img vendor_boot.img}"
 
 # name | device tree | vendor tree | PRODUCT_DEVICE | PRODUCT_SYSTEM_DEVICE | radio dir | stock fingerprint
+# (the product name is "<rom prefix><key>", e.g. lineage_X6532 - see apply_rom)
 DEVICES=(
-  "lineage_X6531|device/infinix/X6531|vendor/infinix/X6531|X6531|X6531|radio|Infinix/X6531-OP/Infinix-X6531:14/UP1A.231005.007/240820V1958:user/release-keys"
-  "lineage_X6531B|device/infinix/X6531|vendor/infinix/X6531|X6531|X6531B|radio_x6531b|Infinix/X6531B-OP/Infinix-X6531B:14/UP1A.231005.007/260713V1136:user/release-keys"
-  "lineage_X6532|device/infinix/X6532|vendor/infinix/X6532|X6532|X6532|radio|Infinix/X6532-OP/Infinix-X6532:14/UP1A.231005.007/240820V2071:user/release-keys"
-  "lineage_KL5|device/tecno/KL5|vendor/tecno/KL5|KL5|KL5|radio|TECNO/KL5-OP/TECNO-KL5:14/UP1A.231005.007/240811V1304:user/release-keys"
-  "lineage_KL5n|device/tecno/KL5|vendor/tecno/KL5|KL5|KL5n|radio_kl5n|TECNO/KL5n-OP/TECNO-KL5n:14/UP1A.231005.007/260710V887:user/release-keys"
+  "X6531|device/infinix/X6531|vendor/infinix/X6531|X6531|X6531|radio|Infinix/X6531-OP/Infinix-X6531:14/UP1A.231005.007/240820V1958:user/release-keys"
+  "X6531B|device/infinix/X6531|vendor/infinix/X6531|X6531|X6531B|radio_x6531b|Infinix/X6531B-OP/Infinix-X6531B:14/UP1A.231005.007/260713V1136:user/release-keys"
+  "X6532|device/infinix/X6532|vendor/infinix/X6532|X6532|X6532|radio|Infinix/X6532-OP/Infinix-X6532:14/UP1A.231005.007/240820V2071:user/release-keys"
+  "KL5|device/tecno/KL5|vendor/tecno/KL5|KL5|KL5|radio|TECNO/KL5-OP/TECNO-KL5:14/UP1A.231005.007/240811V1304:user/release-keys"
+  "KL5n|device/tecno/KL5|vendor/tecno/KL5|KL5|KL5n|radio_kl5n|TECNO/KL5n-OP/TECNO-KL5n:14/UP1A.231005.007/260710V887:user/release-keys"
 )
 
 VARIANT=""
@@ -97,6 +120,121 @@ warn() { printf '%s[!]%s %s\n'  "$c_yel" "$c_reset" "$*"; }
 err()  { printf '%s[x]%s %s\n'  "$c_red" "$c_reset" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
+# ------------------------------------------------------------------- rom -----
+
+# Load the active custom-ROM profile (--rom).  A profile gives the product
+# prefix, the artifact name, the GMS modes the ROM supports and who owns the
+# GApps/microG payload (our device.mk gate for LineageOS, the ROM itself for
+# cROMs that bake their own), so the rest of the script stays ROM-agnostic.
+rom_load() {
+  case "$ROM" in
+    lineage)
+      ROM_NAME="LineageOS"
+      ROM_PREFIX="lineage_"
+      ROM_ZIP_GLOB="lineage-*.zip"
+      ROM_MODES="vanilla gapps microg"
+      ROM_GMS_OWNER="device"
+      ROM_GMS_VARS="WITH_GAPPS WITH_MICROG"
+      ROM_GMS_ENV_gapps="WITH_GAPPS=true"
+      ROM_GMS_ENV_microg="WITH_MICROG=true"
+      ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
+      ROM_RELEASE_CMD="list_releases"
+      ROM_LUNCH_STYLE="release"
+      ;;
+    evox)
+      # Evolution X keeps the Lineage tree/vendor, so the product is lineage_*;
+      # it bakes full GApps by default, so vanilla has to force WITH_GMS=false.
+      ROM_NAME="Evolution X"
+      ROM_PREFIX="lineage_"
+      ROM_ZIP_GLOB="EvolutionX-*.zip"
+      ROM_MODES="vanilla gapps"
+      ROM_GMS_OWNER="rom"
+      ROM_GMS_VARS="WITH_GMS"
+      ROM_GMS_ENV_vanilla="WITH_GMS=false"
+      ROM_GMS_ENV_gapps="WITH_GMS=true"
+      ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
+      ROM_LUNCH_STYLE="release"
+      ;;
+    yaap)
+      # YAAP: GApps on = vendor/google/gms; off = its own microG payload.
+      ROM_NAME="YAAP"
+      ROM_PREFIX="yaap_"
+      ROM_ZIP_GLOB="YAAP-*.zip"
+      ROM_MODES="vanilla gapps"
+      ROM_GMS_OWNER="rom"
+      ROM_GMS_VARS="TARGET_BUILD_GAPPS WITH_GAPPS"
+      ROM_GMS_ENV_vanilla="TARGET_BUILD_GAPPS=false"
+      ROM_GMS_ENV_gapps="TARGET_BUILD_GAPPS=true WITH_GAPPS=true"
+      ROM_LUNCH_STYLE="flat"
+      ;;
+    infinity)
+      ROM_NAME="Project Infinity X"
+      ROM_PREFIX="infinity_"
+      ROM_ZIP_GLOB="Project_Infinity-X-*.zip"
+      ROM_MODES="vanilla gapps"
+      ROM_GMS_OWNER="rom"
+      ROM_GMS_VARS="WITH_GAPPS"
+      ROM_GMS_ENV_gapps="WITH_GAPPS=true"
+      ROM_LUNCH_STYLE="flat"
+      ;;
+    axion)
+      # AxionOS ships GMS and VANILLA OTAs; GApps var not confirmed upstream.
+      ROM_NAME="AxionOS"
+      ROM_PREFIX="axion_"
+      ROM_ZIP_GLOB="axion-*.zip"
+      ROM_MODES="vanilla gapps"
+      ROM_GMS_OWNER="rom"
+      ROM_GMS_VARS="WITH_GAPPS TARGET_INCLUDE_GAPPS"
+      ROM_GMS_ENV_gapps="WITH_GAPPS=true TARGET_INCLUDE_GAPPS=true"
+      ROM_LUNCH_STYLE="flat"
+      ;;
+    *) die "unknown ROM '$ROM' (known: lineage evox yaap infinity axion)" ;;
+  esac
+  ROM_GMS_ENV_vanilla="${ROM_GMS_ENV_vanilla:-}"
+}
+
+# the env assignment exported for a GMS pass (empty for vanilla)
+rom_gms_env() {
+  local n="ROM_GMS_ENV_$1"
+  printf '%s' "${!n:-}"
+}
+
+# the lunch arguments for <product> <variant>, as separate words
+rom_lunch_args() {
+  case "$ROM_LUNCH_STYLE" in
+    release) printf '%s %s %s' "$1" "$LUNCH_RELEASE" "$2" ;;
+    dash)    printf '%s-%s' "$1" "$2" ;;
+    *)       printf '%s %s' "$1" "$2" ;;
+  esac
+}
+
+# prefix every device key with the product prefix (X6532 -> lineage_X6532)
+apply_rom() {
+  rom_load
+  local -a out=(); local e
+  for e in "${DEVICES[@]}"; do out+=("${ROM_PREFIX}${e}"); done
+  DEVICES=("${out[@]}")
+  rom_gms_menu
+}
+
+# the GMS menu options this ROM supports (vanilla is always present)
+rom_gms_menu() {
+  MENU_GMS_OPTS=("vanilla only"); MENU_GMS_WANTS=(vanilla)
+  TUI_GMS_MODES=(vanilla); TUI_GMS_LABELS=(vanilla)
+  if [[ " $ROM_MODES " == *" gapps "* ]]; then
+    MENU_GMS_OPTS+=("vanilla + gapps"); MENU_GMS_WANTS+=("vanilla,gapps")
+    TUI_GMS_MODES+=("vanilla,gapps"); TUI_GMS_LABELS+=("vanilla+gapps")
+  fi
+  if [[ " $ROM_MODES " == *" microg "* ]]; then
+    MENU_GMS_OPTS+=("vanilla + microG"); MENU_GMS_WANTS+=("vanilla,microg")
+    TUI_GMS_MODES+=("vanilla,microg"); TUI_GMS_LABELS+=("vanilla+microg")
+  fi
+  if [[ " $ROM_MODES " == *" gapps "* && " $ROM_MODES " == *" microg "* ]]; then
+    MENU_GMS_OPTS+=("all 3 (vanilla + gapps + microG)"); MENU_GMS_WANTS+=(all)
+    TUI_GMS_MODES+=("vanilla,gapps,microg"); TUI_GMS_LABELS+=("all (3)")
+  fi
+}
+
 usage() {
   cat <<'EOF'
 tranG81 - build + release every device, then upload each ROM to Buzzheavier.
@@ -105,11 +243,11 @@ Fixed order:  X6531 -> X6531B -> X6532 -> KL5 -> KL5n
 KL5n is last on purpose: its vendorsetup.sh applies the hardware/nxp/nfc
 patches when PATCH_NFC=true, so it runs after the clean builds.
 
-Run it from the root of the LineageOS source tree (the dir holding
-build/envsetup.sh) or point ANDROID_ROOT at it:
+Run it from the root of the ROM source tree (the dir holding build/envsetup.sh)
+or point ANDROID_ROOT at it.  The ROM is chosen with --rom (default lineage):
 
     ./build-all.sh                        # interactive TUI menu
-    ./build-all.sh -v userdebug -u yes     # non-interactive
+    ./build-all.sh --rom yaap -v userdebug -u yes
     ANDROID_ROOT=~/lineage ./build-all.sh
 
 The menu is a pure-bash full-screen TUI (arrow keys, checkboxes, colours) -
@@ -128,9 +266,12 @@ grouped per device and tagged rom / boot / vendor_boot / image.
 Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
 
 Options:
+      --rom NAME                     ROM profile: lineage, evox (Evolution X),
+                                     yaap, infinity (Project Infinity X),
+                                     axion (default: lineage)
   -v, --variant user|userdebug|eng   build variant (default: interactive TUI)
       --release NAME                 lunch release config (e.g. bp4a); default
-                                     reads vendor/lineage/vars/aosp_target_release
+                                     reads the ROM's release pin (if it has one)
   -d, --devices LIST                 all | X6531,X6531B,X6532,KL5,KL5n
   -u, --upload | --no-upload         upload to Buzzheavier (default: --no-upload)
   -a, --account ID                   Buzzheavier account id (else anonymous)
@@ -165,16 +306,17 @@ product-config time, so clear out/target/product/<device> before toggling it on
 a tree that already built.
 
 GMS modes: every selected device is built once per mode, in the fixed order
-vanilla -> gapps -> microg.  vanilla is stock LineageOS; gapps bakes
-MindTheGapps (vendor/gapps); microg bakes microG (vendor/partner_gms - LineageOS
-already ships microG-only signature spoofing, so no frameworks patch is needed).
-gapps and microG are mutually exclusive.  Both are read from device.mk at
-product-config time, so the product out dir is cleared when the mode changes (a
+vanilla -> gapps -> microg, limited to the modes the ROM profile supports.
+For LineageOS vanilla is stock, gapps bakes MindTheGapps (vendor/gapps) and
+microg bakes microG (vendor/partner_gms - LineageOS already ships microG-only
+signature spoofing, so no frameworks patch is needed); both are read from
+device.mk at product-config time.  cROM profiles that ship their own
+GApps/microG just flip the ROM's own switch instead.  gapps and microG are
+mutually exclusive.  The product out dir is cleared when the mode changes (a
 per-product .trang81-gms stamp tracks it).  Artifacts land in
 out/tranG81-releases/<variant>/<mode>/ and non-vanilla zips get a -GAPPS/-MICROG
 suffix; boot images are collected on the vanilla pass only (identical across
-modes).  The menu has a GMS row (keys g / left / right) to pick vanilla, +gapps,
-+microG or all three.
+modes).  The menu has a GMS row (keys g / left / right).
 
 Telegram: create a bot with @BotFather for the token, message the bot, then get
 your chat id (e.g. https://api.telegram.org/bot<TOKEN>/getUpdates).  Then use
@@ -234,18 +376,19 @@ normalize_gms() {
   sel[vanilla]=1
   GMS_MODE_LIST=()
   for t in vanilla gapps microg; do
-    [[ -n "${sel[$t]:-}" ]] && GMS_MODE_LIST+=("$t")
+    [[ -n "${sel[$t]:-}" ]] || continue
+    [[ " $ROM_MODES " == *" $t "* ]] || { warn "$ROM_NAME has no '$t' pass - skipping"; continue; }
+    GMS_MODE_LIST+=("$t")
   done
   [[ ${#GMS_MODE_LIST[@]} -gt 0 ]] || GMS_MODE_LIST=(vanilla)
 }
 
-# export the env device.mk reads to pick the GMS payload for this pass.
+# export the env the ROM reads to pick the GMS payload for this pass.
 set_gms_env() {
-  unset WITH_GAPPS WITH_MICROG
-  case "$1" in
-    gapps)  export WITH_GAPPS=true ;;
-    microg) export WITH_MICROG=true ;;
-  esac
+  local v e
+  for v in $ROM_GMS_VARS; do unset "$v"; done
+  for e in $(rom_gms_env "$1"); do export "$e"; done
+  return 0
 }
 
 # upper-case tag used for artifact suffixes.
@@ -405,15 +548,15 @@ verify_radio() {
 # the tree pairing itself: device tree <-> vendor tree <-> product.
 verify_trees() {
   local product="$1" devtree="$2" vendortree="$3" device="$4" radiodir="$5"
-  local short="${product#lineage_}" fail=0 bn
+  local short="${product#$ROM_PREFIX}" fail=0 bn
 
   for d in "$ANDROID_ROOT/$devtree" "$ANDROID_ROOT/$vendortree"; do
     [[ -d "$d" ]] || { err "missing tree: $d"; fail=1; }
   done
   [[ "$fail" -eq 0 ]] || return 1
 
-  if [[ ! -f "$ANDROID_ROOT/$devtree/lineage_$short.mk" ]]; then
-    err "missing product makefile: $devtree/lineage_$short.mk"
+  if [[ ! -f "$ANDROID_ROOT/$devtree/$ROM_PREFIX$short.mk" ]]; then
+    err "missing product makefile: $devtree/$ROM_PREFIX$short.mk"
     fail=1
   fi
 
@@ -783,19 +926,20 @@ show_build_errors() {
 }
 
 # LineageOS 23.x lunch() wants a release config (bp4a, trunk_staging, ...) that is
-# not optional.  Prefer --release / TARGET_RELEASE, else the pin LineageOS ships
-# in vendor/lineage/vars/aosp_target_release (what its own breakfast uses), else
-# a release the tree lists for this product, else AOSP's default.
+# not optional.  Prefer --release / TARGET_RELEASE, else the pin the ROM ships
+# (ROM_RELEASE_FILE), else a release the tree lists for this product, else
+# AOSP's default.  ROMs whose lunch takes no release return empty.
 resolve_release() {
   local product="$1" f rel
+  [[ "$ROM_LUNCH_STYLE" == "release" ]] || return 0
   if [[ -n "$LUNCH_RELEASE" ]]; then printf '%s' "$LUNCH_RELEASE"; return 0; fi
-  f="$ANDROID_ROOT/vendor/lineage/vars/aosp_target_release"
-  if [[ -r "$f" ]]; then
+  f="$ANDROID_ROOT/$ROM_RELEASE_FILE"
+  if [[ -n "$ROM_RELEASE_FILE" && -r "$f" ]]; then
     rel=$(sed -n 's/^[[:space:]]*aosp_target_release[[:space:]]*=[[:space:]]*\([A-Za-z0-9_.-]*\).*/\1/p' "$f" | tail -n1)
     [[ -n "$rel" ]] && { printf '%s' "$rel"; return 0; }
   fi
-  if declare -F list_releases >/dev/null 2>&1; then
-    rel=$(list_releases "$product" 2>/dev/null | tr ' \t' '\n\n' | grep -E '^[A-Za-z0-9_.-]+$' | head -n1)
+  if [[ -n "$ROM_RELEASE_CMD" ]] && declare -F "$ROM_RELEASE_CMD" >/dev/null 2>&1; then
+    rel=$("$ROM_RELEASE_CMD" "$product" 2>/dev/null | tr ' \t' '\n\n' | grep -E '^[A-Za-z0-9_.-]+$' | head -n1)
     [[ -n "$rel" ]] && { printf '%s' "$rel"; return 0; }
   fi
   printf '%s' 'trunk_staging'
@@ -807,15 +951,14 @@ run_build() {
 
   [[ -n "$LUNCH_RELEASE" ]] || LUNCH_RELEASE="$(resolve_release "$product")"
 
-  # device.mk reads these at product-config time to pick the GMS payload.
+  # the ROM reads this at product-config time to pick the GMS payload.
   set_gms_env "$GMS_MODE"
-  [[ "$GMS_MODE" == gapps ]]  && gmsenv="WITH_GAPPS=true"
-  [[ "$GMS_MODE" == microg ]] && gmsenv="WITH_MICROG=true"
+  gmsenv="$(rom_gms_env "$GMS_MODE")"
 
   if [[ "$DRY_RUN" == "yes" ]]; then
     say "    cd $ANDROID_ROOT"
     say "    source build/envsetup.sh   (PATCH_NFC=$([[ "$nfc" == 1 ]] && echo true || echo unset)${gmsenv:+ $gmsenv})"
-    say "    lunch ${product} ${LUNCH_RELEASE} ${variant}"
+    say "    lunch $(rom_lunch_args "$product" "$variant")"
     say "    mka ${MAKE_TARGET}${JOBS:+ -j$JOBS}"
     return 0
   fi
@@ -837,10 +980,11 @@ run_build() {
   source build/envsetup.sh >/dev/null
   rc=$?
   if [[ "$rc" -eq 0 ]]; then
-    lunch "$product" "$LUNCH_RELEASE" "$variant"; rc=$?
+    # shellcheck disable=SC2086
+    lunch $(rom_lunch_args "$product" "$variant"); rc=$?
     if [[ "$rc" -ne 0 ]]; then
-      warn "lunch $product $LUNCH_RELEASE $variant failed - pick the release with"
-      warn "   --release NAME (see vendor/lineage/vars/aosp_target_release)"
+      warn "lunch $(rom_lunch_args "$product" "$variant") failed${LUNCH_RELEASE:+ - pass --release NAME}"
+      [[ -n "$ROM_RELEASE_FILE" ]] && warn "   release pin: $ROM_RELEASE_FILE"
     fi
   fi
   if [[ "$rc" -eq 0 && "$nfc" == "1" ]]; then
@@ -868,15 +1012,15 @@ collect_artifacts() {
   local tag stem dest zip img name msuf
   COLLECTED=()
 
-  tag="${product#lineage_}"
+  tag="${product#$ROM_PREFIX}"
   mkdir -p "$dir" || return 1
 
   msuf=""
   [[ "$GMS_MODE" != vanilla ]] && msuf="-$(gms_label "$GMS_MODE")"
 
-  zip=$(ls -1t "$out"/lineage*.zip 2>/dev/null | head -n1)
+  zip=$(ls -1t "$out"/$ROM_ZIP_GLOB 2>/dev/null | head -n1)
   if [[ -z "$zip" || ! -f "$zip" ]]; then
-    err "no lineage*.zip under out/target/product/$device"
+    err "no $ROM_ZIP_GLOB under out/target/product/$device"
     return 1
   fi
   stem="$(basename "$zip")"; stem="${stem%.zip}"
@@ -906,7 +1050,7 @@ collect_artifacts() {
 # --no-build: reuse the artifacts already sitting in the release dir.
 collect_existing() {
   local product="$1" variant="$2"
-  local tag="${product#lineage_}"
+  local tag="${product#$ROM_PREFIX}"
   local dir="$RELEASE_ROOT/$variant/$GMS_MODE" f
   COLLECTED=()
   if [[ ! -d "$dir" ]]; then
@@ -961,8 +1105,8 @@ TUI_GMS=0
 TUI_STATUS=""
 TUI_STTY=""
 TUI_VARIANTS=(user userdebug eng)
-TUI_GMS_MODES=(vanilla "vanilla,gapps" "vanilla,microg" "vanilla,gapps,microg")
-TUI_GMS_LABELS=(vanilla "vanilla+gapps" "vanilla+microg" "all (3)")
+declare -a TUI_GMS_MODES=() TUI_GMS_LABELS=()
+declare -a MENU_GMS_OPTS=() MENU_GMS_WANTS=()
 declare -a TUI_SEL=()
 
 tui_cleanup() {
@@ -1033,7 +1177,7 @@ tui_render() {
 
   printf '   %sdevices%s  (space toggles, a all, n none)\033[K\n' "$c_cyn" "$c_reset"
   for ((i = 0; i < n; i++)); do
-    short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
+    short="${DEVICES[$i]%%|*}"; short="${short#$ROM_PREFIX}"
     row="$(tui_mark $((i + 1)))"
     (( TUI_SEL[i] )) && row+="[x] " || row+="[ ] "
     (( TUI_FOCUS == i + 1 )) && row+="${c_bold}${short}${c_reset}" || row+="$short"
@@ -1115,7 +1259,7 @@ tui_run() {
   done
 
   for ((i = 0; i < n; i++)); do
-    short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
+    short="${DEVICES[$i]%%|*}"; short="${short#$ROM_PREFIX}"
     (( TUI_SEL[i] )) && req+="${req:+,}$short" || all=0
   done
   tui_cleanup
@@ -1129,7 +1273,7 @@ tui_run() {
 
 # plain ask() flow, used when there is no terminal to draw on
 menu_ask() {
-  local v i short xd
+  local v i short gm gi xd
 
   say ""
   info "build variant"
@@ -1145,7 +1289,7 @@ menu_ask() {
   say "  2) pick"
   if [[ "$(ask "choice" "1")" == "2" ]]; then
     for ((i = 0; i < ${#DEVICES[@]}; i++)); do
-      short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
+      short="${DEVICES[$i]%%|*}"; short="${short#$ROM_PREFIX}"
       say "  $((i + 1))) $short"
     done
     REQUESTED="$(ask "numbers, comma separated" "1,2,3,4,5")"
@@ -1155,16 +1299,13 @@ menu_ask() {
 
   say ""
   info "gms modes"
-  select gm in "vanilla only" "vanilla + gapps" "vanilla + microG" "all 3 (vanilla + gapps + microG)"; do
+  select gm in "${MENU_GMS_OPTS[@]}"; do
     [[ -n "${gm:-}" ]] && break
-    warn "pick 1, 2, 3 or 4"
+    warn "pick a number"
   done
-  case "$gm" in
-    "vanilla + gapps")  GMS_WANT=(vanilla,gapps) ;;
-    "vanilla + microG") GMS_WANT=(vanilla,microg) ;;
-    "all 3 (vanilla + gapps + microG)") GMS_WANT=(all) ;;
-    *)                  GMS_WANT=(vanilla) ;;
-  esac
+  for gi in "${!MENU_GMS_OPTS[@]}"; do
+    [[ "${MENU_GMS_OPTS[$gi]}" == "$gm" ]] && GMS_WANT=("${MENU_GMS_WANTS[$gi]}")
+  done
 
   [[ -n "$WITH_XGSI_LOGS" ]] && xd="y" || xd="n"
   [[ "$(ask "xgsi boot/dmesg logs?" "$xd")" =~ ^[Yy] ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
@@ -1184,6 +1325,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -v|--variant)   VARIANT="${2:-}"; shift 2 ;;
+      --rom)          ROM="${2:-}"; shift 2 ;;
       --release)      LUNCH_RELEASE="${2:-}"; shift 2 ;;
       -d|--devices)   REQUESTED="${2:-}"; shift 2 ;;
       -u|--upload)
@@ -1240,7 +1382,7 @@ select_devices() {
   for w in "${want[@]}"; do
     [[ -n "$w" ]] || continue
     for i in "${!DEVICES[@]}"; do
-      short="${DEVICES[$i]%%|*}"; short="${short#lineage_}"
+      short="${DEVICES[$i]%%|*}"; short="${short#$ROM_PREFIX}"
       if [[ "$w" == "$short" || "$w" == "$((i + 1))" ]]; then
         SELECTED+=("${DEVICES[$i]}")
       fi
@@ -1269,11 +1411,14 @@ on_interrupt() {
 
 main() {
   parse_args "$@"
+  apply_rom
   [[ -z "$NOTIFY_MODE" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] && NOTIFY_MODE="telegram"
   need curl; need sha1sum; need sha256sum; need base64
   find_root
-  ensure_microg_namespace
-  prune_microg_unshipped
+  if [[ "$ROM_GMS_OWNER" == "device" ]]; then
+    ensure_microg_namespace
+    prune_microg_unshipped
+  fi
 
   if [[ -z "$VARIANT" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
@@ -1299,11 +1444,14 @@ main() {
 
   local first_product="${SELECTED[0]%%|*}"
   LUNCH_RELEASE="$(resolve_release "$first_product")"
-  [[ -n "$LUNCH_RELEASE" ]] || die "could not determine a lunch release - pass --release NAME"
+  if [[ "$ROM_LUNCH_STYLE" == "release" && -z "$LUNCH_RELEASE" ]]; then
+    die "could not determine a lunch release - pass --release NAME"
+  fi
 
   say "======================================================================"
+  info "rom      : $ROM_NAME ($ROM)"
   info "variant  : $VARIANT"
-  info "release  : $LUNCH_RELEASE"
+  info "release  : ${LUNCH_RELEASE:--}"
   info "root     : $ANDROID_ROOT"
   if [[ "$DO_UPLOAD" == "yes" ]]; then
     info "upload   : yes $([[ -n "$BUZZ_ACCOUNT_ID" ]] && echo "(account)" || echo "(anonymous)")"
@@ -1341,7 +1489,7 @@ main() {
   for entry in "${SELECTED[@]}"; do
     idx=$((idx + 1))
     IFS='|' read -r product devtree vendortree device sysdev radiodir fp <<<"$entry"
-    nfc=0; [[ "$product" == "lineage_KL5n" ]] && nfc=1
+    nfc=0; [[ "$product" == "${ROM_PREFIX}KL5n" ]] && nfc=1
 
     say ""
     info "=== $product  [$idx/$total]  (device=$device system=$sysdev) ==="
@@ -1394,7 +1542,7 @@ main() {
       fi
 
       # drop stale artifacts so collection cannot grab the previous product's output
-      rm -f "$ANDROID_ROOT"/out/target/product/"$device"/lineage*.zip
+      rm -f "$ANDROID_ROOT"/out/target/product/"$device"/$ROM_ZIP_GLOB
       for a in $EXTRA_IMAGES; do rm -f "$ANDROID_ROOT/out/target/product/$device/$a"; done
 
       log="$LOG_DIR/$product-$VARIANT-$GMS_MODE.log"
@@ -1419,7 +1567,7 @@ main() {
 
       # the produced zip must carry this product's own radio images, not a
       # sibling product's that shares the system device / output dir.
-      rzip=$(ls -1t "$ANDROID_ROOT/out/target/product/$device"/lineage*.zip 2>/dev/null | head -n1)
+      rzip=$(ls -1t "$ANDROID_ROOT/out/target/product/$device"/$ROM_ZIP_GLOB 2>/dev/null | head -n1)
       if ! verify_zip_radio "$rzip" "$vendortree" "$radiodir"; then
         err "$product: produced rom carries the wrong radio firmware - NOT uploading"
         FAILED+=("$product [$GMS_MODE] (rom radio mismatch)")
