@@ -15,8 +15,9 @@
 #     ANDROID_ROOT=~/lineage ./build-all.sh
 #
 # Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
-# Optional: ccache (--ccache).  Every upload is sha256-verified against the
-# hash the service reports, and the link expiry is printed.
+# Optional: ccache (--ccache), unzip (post-build rom radio check).  Every upload
+# is sha256-verified against the hash the service reports, and the link expiry
+# is printed.
 #
 set -uo pipefail
 
@@ -104,10 +105,11 @@ stdin or running without a terminal falls back to plain numbered prompts.
 
 Before every build it sha1-checks each radio (firmware) image the vendor tree
 declares for that product, so a wrong or mixed-up firmware is refused.  After
-every build it collects the ROM zip plus boot.img/vendor_boot.img (put more in
-EXTRA_IMAGES, e.g. dtbo.img) and uploads them; each upload is sha256-verified
-against the hash the service reports, and the expiry is printed (anonymous
-links expire in a few days).
+every build it re-checks that the produced ROM zip carries that product's own
+radio images (by content sha1), then collects the ROM zip plus
+boot.img/vendor_boot.img (put more in EXTRA_IMAGES, e.g. dtbo.img) and uploads
+them; each upload is sha256-verified against the hash the service reports, and
+the expiry is printed (anonymous links expire in a few days).
 Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
 
 Options:
@@ -220,6 +222,14 @@ check_dirty() {
 
 # ------------------------------------------------------------ firmware ------
 
+# print "<rel> <sha1>" for every radio image the vendor tree declares for this
+# product, parsed out of its Android.mk add-radio-file-sha1-checked list.
+radio_image_list() {
+  local vendortree="$1" radiodir="$2"
+  sed -n "s/.*add-radio-file-sha1-checked,\($radiodir\/[^,]*\),\([0-9a-f]\{40\}\).*/\1 \2/p" \
+    "$ANDROID_ROOT/$vendortree/Android.mk"
+}
+
 # sha1-check every radio image the vendor tree declares for this product.
 verify_radio() {
   local vendortree="$1" radiodir="$2"
@@ -245,14 +255,14 @@ verify_radio() {
       err "   actual   $actual"
       bad=$((bad + 1))
     fi
-  done < <(sed -n "s/.*add-radio-file-sha1-checked,\($radiodir\/[^,]*\),\([0-9a-f]\{40\}\).*/\1 \2/p" "$mkv")
+  done < <(radio_image_list "$vendortree" "$radiodir")
 
   if [[ "$count" -eq 0 ]]; then
     err "vendor tree declares no '$radiodir/' firmware - wrong tree for this product?"
     return 1
   fi
   [[ "$bad" -eq 0 ]] || return 1
-  info "$count radio images verified for $radiodir/"
+  info "$count radio images verified for $vendortree/$radiodir/"
 }
 
 # the tree pairing itself: device tree <-> vendor tree <-> product.
@@ -322,6 +332,53 @@ verify_rom() {
     return 1
   fi
   warn "no build.prop with a fingerprint under out/target/product/$device - skipped"
+  return 0
+}
+
+# after the build: the produced OTA must carry *this* product's own radio
+# images.  Each declared image is matched by basename anywhere in the zip and
+# its content sha1 compared, so another product's firmware cannot end up in
+# this zip without being caught.  A missing entry is only a warning (the
+# add-radio-file-sha1-checked gate already checked it at build time); a present
+# entry with the wrong sha1 is fatal and stops the upload.
+verify_zip_radio() {
+  local zip="$1" vendortree="$2" radiodir="$3"
+  local rel exp name entry got n=0 bad=0
+
+  if [[ -z "$zip" || ! -f "$zip" ]]; then
+    warn "no rom zip to check for $vendortree/$radiodir firmware - skipped"
+    return 0
+  fi
+  if ! command -v unzip >/dev/null 2>&1; then
+    warn "unzip not on PATH - post-build rom radio check skipped"
+    return 0
+  fi
+
+  while read -r rel exp; do
+    [[ -n "$rel" ]] || continue
+    n=$((n + 1))
+    name="$(basename "$rel")"
+    entry="$(unzip -Z1 "$zip" 2>/dev/null | grep -iE "(^|/)$name\$" | head -n1)"
+    if [[ -z "$entry" ]]; then
+      warn "rom radio $name: not packaged in the rom zip (build-time sha1 check still applies)"
+      continue
+    fi
+    got="$(unzip -p "$zip" "$entry" 2>/dev/null | sha1sum | awk '{print $1}')"
+    if [[ "$got" == "$exp" ]]; then
+      ok "rom radio ok   $name"
+    else
+      err "rom radio WRONG: $name ($entry in ${zip##*/})"
+      err "   expected $exp"
+      err "   actual   $got"
+      bad=$((bad + 1))
+    fi
+  done < <(radio_image_list "$vendortree" "$radiodir")
+
+  if [[ "$n" -eq 0 ]]; then
+    warn "no '$radiodir/' firmware declared - post-build rom radio check skipped"
+    return 0
+  fi
+  [[ "$bad" -eq 0 ]] || return 1
   return 0
 }
 
@@ -515,6 +572,7 @@ show_build_errors() {
 
 run_build() {
   local product="$1" variant="$2" nfc="$3" devtree="$4" log="$5"
+  local rc
 
   if [[ "$DRY_RUN" == "yes" ]]; then
     say "    cd $ANDROID_ROOT"
@@ -533,20 +591,27 @@ run_build() {
   fi
   [[ -n "$WITH_XGSI_LOGS" ]] && export WITH_XGSI_LOGS
 
+  # build/envsetup.sh is not nounset-safe - it reads $TOP before defaulting it, so
+  # our own set -u makes it die with "TOP: unbound variable".  Turn nounset off
+  # while the sourced envsetup, its lunch()/mka() helpers and the make run.
+  set +u
   # shellcheck disable=SC1091
-  source build/envsetup.sh >/dev/null || return 1
-  lunch "${product}-${variant}" || return 1
-
-  if [[ "$nfc" == "1" ]]; then
-    verify_nfc_patches "$devtree" || return 1
+  source build/envsetup.sh >/dev/null
+  rc=$?
+  if [[ "$rc" -eq 0 ]]; then lunch "${product}-${variant}"; rc=$?; fi
+  if [[ "$rc" -eq 0 && "$nfc" == "1" ]]; then
+    verify_nfc_patches "$devtree" || rc=1
   fi
 
   local -a mk=(mka "$MAKE_TARGET")
   [[ -n "$JOBS" ]] && mk+=("-j$JOBS")
-
-  say "+ ${mk[*]}   (log: ${log#$ANDROID_ROOT/})"
-  "${mk[@]}" 2>&1 | tee "$log"
-  return "${PIPESTATUS[0]}"
+  if [[ "$rc" -eq 0 ]]; then
+    say "+ ${mk[*]}   (log: ${log#$ANDROID_ROOT/})"
+    "${mk[@]}" 2>&1 | tee "$log"
+    rc="${PIPESTATUS[0]}"
+  fi
+  set -u
+  return "$rc"
 }
 
 # move the freshly built artifacts out of the shared out dir with unique names.
@@ -964,7 +1029,7 @@ main() {
   trap on_interrupt INT TERM
   RUN_START=$(date +%s)
 
-  local entry product devtree vendortree device sysdev radiodir fp nfc log a name
+  local entry product devtree vendortree device sysdev radiodir fp nfc log a name rzip
   local idx=0 total=${#SELECTED[@]} t0 dt status
   local -a pf
 
@@ -1033,6 +1098,17 @@ main() {
         err "$product: ROM firmware does not match - NOT uploading"
         FAILED+=("$product (rom fingerprint)")
         TIMING+=("$product|$(( $(date +%s) - t0 ))|0|rom mismatch")
+        [[ "$KEEP_GOING" == "yes" ]] || break
+        continue
+      fi
+
+      # the produced zip must carry this product's own radio images, not a
+      # sibling product's that shares the system device / output dir.
+      rzip=$(ls -1t "$ANDROID_ROOT/out/target/product/$device"/lineage*.zip 2>/dev/null | head -n1)
+      if ! verify_zip_radio "$rzip" "$vendortree" "$radiodir"; then
+        err "$product: produced rom carries the wrong radio firmware - NOT uploading"
+        FAILED+=("$product (rom radio mismatch)")
+        TIMING+=("$product|$(( $(date +%s) - t0 ))|0|rom radio mismatch")
         [[ "$KEEP_GOING" == "yes" ]] || break
         continue
       fi
