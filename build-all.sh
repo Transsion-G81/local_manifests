@@ -54,17 +54,24 @@ MIN_FREE_GB="${MIN_FREE_GB:-40}"
 GMS_MODES="${GMS_MODES:-vanilla}"
 
 # custom-ROM profile (--rom); rom_load() fills these in and apply_rom() turns
-# the device keys above into full product names.
+# the device keys above into full product names.  ROM_MODES / ROM_GMS_ENV_* are
+# filled by rom_detect_gms(): for LineageOS from our own device gate, for other
+# ROMs by probing the synced tree for the GApps/microG it actually ships.
 ROM="${ROM:-lineage}"
 ROM_NAME=""
 ROM_PREFIX=""
 ROM_ZIP_GLOB=""
+ROM_VENDOR=""
 ROM_MODES=""
 ROM_GMS_OWNER=""
 ROM_GMS_VARS=""
 ROM_GMS_ENV_vanilla=""
 ROM_GMS_ENV_gapps=""
 ROM_GMS_ENV_microg=""
+ROM_HAVE_GAPPS="no"
+ROM_HAVE_MICROG="no"
+ROM_GAPPS_TOGGLE=""
+ROM_MICROG_TOGGLE=""
 ROM_RELEASE_FILE=""
 ROM_RELEASE_CMD=""
 ROM_LUNCH_STYLE=""
@@ -123,74 +130,116 @@ die()  { err "$*"; exit 1; }
 # ------------------------------------------------------------------- rom -----
 
 # Load the active custom-ROM profile (--rom).  A profile gives the product
-# prefix, the artifact name, the GMS modes the ROM supports and who owns the
-# GApps/microG payload (our device.mk gate for LineageOS, the ROM itself for
-# cROMs that bake their own), so the rest of the script stays ROM-agnostic.
+# prefix, the artifact name, the ROM's vendor dir and lunch style; the GApps and
+# microG modes come from rom_detect_gms(), which reads what the tree ships
+# instead of hardcoding per-ROM switch names.
 rom_load() {
   case "$ROM" in
     lineage)
       ROM_NAME="LineageOS"
       ROM_PREFIX="lineage_"
       ROM_ZIP_GLOB="lineage-*.zip"
-      ROM_MODES="vanilla gapps microg"
+      ROM_VENDOR="vendor/lineage"
       ROM_GMS_OWNER="device"
-      ROM_GMS_VARS="WITH_GAPPS WITH_MICROG"
-      ROM_GMS_ENV_gapps="WITH_GAPPS=true"
-      ROM_GMS_ENV_microg="WITH_MICROG=true"
       ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
       ROM_RELEASE_CMD="list_releases"
       ROM_LUNCH_STYLE="release"
       ;;
     evox)
-      # Evolution X keeps the Lineage tree/vendor, so the product is lineage_*;
-      # it bakes full GApps by default, so vanilla has to force WITH_GMS=false.
+      # Evolution X keeps the Lineage tree/vendor, so the product is lineage_*.
       ROM_NAME="Evolution X"
       ROM_PREFIX="lineage_"
       ROM_ZIP_GLOB="EvolutionX-*.zip"
-      ROM_MODES="vanilla gapps"
+      ROM_VENDOR="vendor/evolution"
       ROM_GMS_OWNER="rom"
-      ROM_GMS_VARS="WITH_GMS"
-      ROM_GMS_ENV_vanilla="WITH_GMS=false"
-      ROM_GMS_ENV_gapps="WITH_GMS=true"
       ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
       ROM_LUNCH_STYLE="release"
       ;;
     yaap)
-      # YAAP: GApps on = vendor/google/gms; off = its own microG payload.
       ROM_NAME="YAAP"
       ROM_PREFIX="yaap_"
       ROM_ZIP_GLOB="YAAP-*.zip"
-      ROM_MODES="vanilla gapps"
+      ROM_VENDOR="vendor/yaap"
       ROM_GMS_OWNER="rom"
-      ROM_GMS_VARS="TARGET_BUILD_GAPPS WITH_GAPPS"
-      ROM_GMS_ENV_vanilla="TARGET_BUILD_GAPPS=false"
-      ROM_GMS_ENV_gapps="TARGET_BUILD_GAPPS=true WITH_GAPPS=true"
       ROM_LUNCH_STYLE="flat"
       ;;
     infinity)
       ROM_NAME="Project Infinity X"
       ROM_PREFIX="infinity_"
       ROM_ZIP_GLOB="Project_Infinity-X-*.zip"
-      ROM_MODES="vanilla gapps"
+      ROM_VENDOR="vendor/infinity"
       ROM_GMS_OWNER="rom"
-      ROM_GMS_VARS="WITH_GAPPS"
-      ROM_GMS_ENV_gapps="WITH_GAPPS=true"
       ROM_LUNCH_STYLE="flat"
       ;;
     axion)
-      # AxionOS ships GMS and VANILLA OTAs; GApps var not confirmed upstream.
       ROM_NAME="AxionOS"
       ROM_PREFIX="axion_"
       ROM_ZIP_GLOB="axion-*.zip"
-      ROM_MODES="vanilla gapps"
+      ROM_VENDOR="vendor/axion"
       ROM_GMS_OWNER="rom"
-      ROM_GMS_VARS="WITH_GAPPS TARGET_INCLUDE_GAPPS"
-      ROM_GMS_ENV_gapps="WITH_GAPPS=true TARGET_INCLUDE_GAPPS=true"
       ROM_LUNCH_STYLE="flat"
       ;;
     *) die "unknown ROM '$ROM' (known: lineage evox yaap infinity axion)" ;;
   esac
   ROM_GMS_ENV_vanilla="${ROM_GMS_ENV_vanilla:-}"
+}
+
+# Decide which GMS passes make sense and how to turn each on.  LineageOS uses the
+# gate our device.mk reads; every other ROM is probed: if it ships a Gapps tree
+# (or exposes a switch for one) it gets a gapps pass, likewise microG.  The
+# switch name is taken from the ROM's own config so nothing is hardcoded.
+rom_detect_gms() {
+  ROM_MODES=""; ROM_GMS_VARS=""
+  ROM_GMS_ENV_vanilla=""; ROM_GMS_ENV_gapps=""; ROM_GMS_ENV_microg=""
+  ROM_HAVE_GAPPS="no"; ROM_HAVE_MICROG="no"
+  ROM_GAPPS_TOGGLE=""; ROM_MICROG_TOGGLE=""
+
+  if [[ "$ROM_GMS_OWNER" == device ]]; then
+    ROM_MODES="vanilla gapps microg"
+    ROM_GMS_VARS="WITH_GAPPS WITH_MICROG"
+    ROM_GMS_ENV_gapps="WITH_GAPPS=true"
+    ROM_GMS_ENV_microg="WITH_MICROG=true"
+    return 0
+  fi
+
+  local base="$ANDROID_ROOT/${ROM_VENDOR}" d v
+  for d in vendor/gms vendor/google/gms vendor/gapps; do
+    [[ -e "$ANDROID_ROOT/$d" ]] && ROM_HAVE_GAPPS=yes
+  done
+  for d in vendor/microg vendor/microG; do
+    [[ -e "$ANDROID_ROOT/$d" ]] && ROM_HAVE_MICROG=yes
+  done
+
+  if [[ -d "$base" ]]; then
+    for v in WITH_GMS WITH_GAPPS TARGET_BUILD_GAPPS TARGET_INCLUDE_GAPPS TARGET_SUPPORTS_GOOGLE_APPS; do
+      if grep -rqsE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|$)" "$base" --include='*.mk' 2>/dev/null; then
+        ROM_HAVE_GAPPS=yes; ROM_GAPPS_TOGGLE="$v"; break
+      fi
+    done
+    for v in WITH_MICROG TARGET_BUILD_MICROG INCLUDE_MICROG TARGET_SUPPORTS_MICROG; do
+      if grep -rqsE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|$)" "$base" --include='*.mk' 2>/dev/null; then
+        ROM_HAVE_MICROG=yes; ROM_MICROG_TOGGLE="$v"; break
+      fi
+    done
+  fi
+
+  ROM_MODES="vanilla"
+  if [[ "$ROM_HAVE_GAPPS" == yes ]]; then
+    ROM_MODES+=" gapps"
+    [[ -n "$ROM_GAPPS_TOGGLE" ]] && ROM_GMS_ENV_gapps="$ROM_GAPPS_TOGGLE=true"
+    # if the ROM turns GApps on by default, the vanilla pass must turn them off
+    if [[ -n "$ROM_GAPPS_TOGGLE" ]] && \
+       grep -rqsE "^[[:space:]]*$ROM_GAPPS_TOGGLE[[:space:]]*[?:]?=[[:space:]]*true" "$base" --include='*.mk' 2>/dev/null; then
+      ROM_GMS_ENV_vanilla="$ROM_GAPPS_TOGGLE=false"
+    fi
+  fi
+  if [[ "$ROM_HAVE_MICROG" == yes ]]; then
+    ROM_MODES+=" microg"
+    [[ -n "$ROM_MICROG_TOGGLE" ]] && ROM_GMS_ENV_microg="$ROM_MICROG_TOGGLE=true"
+  fi
+  [[ -n "$ROM_GAPPS_TOGGLE" ]] && ROM_GMS_VARS="${ROM_GMS_VARS:+$ROM_GMS_VARS }$ROM_GAPPS_TOGGLE"
+  [[ -n "$ROM_MICROG_TOGGLE" ]] && ROM_GMS_VARS="${ROM_GMS_VARS:+$ROM_GMS_VARS }$ROM_MICROG_TOGGLE"
+  return 0
 }
 
 # the env assignment exported for a GMS pass (empty for vanilla)
@@ -214,7 +263,6 @@ apply_rom() {
   local -a out=(); local e
   for e in "${DEVICES[@]}"; do out+=("${ROM_PREFIX}${e}"); done
   DEVICES=("${out[@]}")
-  rom_gms_menu
 }
 
 # the GMS menu options this ROM supports (vanilla is always present)
@@ -306,17 +354,17 @@ product-config time, so clear out/target/product/<device> before toggling it on
 a tree that already built.
 
 GMS modes: every selected device is built once per mode, in the fixed order
-vanilla -> gapps -> microg, limited to the modes the ROM profile supports.
-For LineageOS vanilla is stock, gapps bakes MindTheGapps (vendor/gapps) and
+vanilla -> gapps -> microg, limited to the modes the tree actually provides.
+LineageOS uses our device.mk gate: gapps bakes MindTheGapps (vendor/gapps) and
 microg bakes microG (vendor/partner_gms - LineageOS already ships microG-only
-signature spoofing, so no frameworks patch is needed); both are read from
-device.mk at product-config time.  cROM profiles that ship their own
-GApps/microG just flip the ROM's own switch instead.  gapps and microG are
-mutually exclusive.  The product out dir is cleared when the mode changes (a
-per-product .trang81-gms stamp tracks it).  Artifacts land in
-out/tranG81-releases/<variant>/<mode>/ and non-vanilla zips get a -GAPPS/-MICROG
-suffix; boot images are collected on the vanilla pass only (identical across
-modes).  The menu has a GMS row (keys g / left / right).
+signature spoofing, so no frameworks patch is needed).  Other ROMs are probed:
+if the tree ships a GApps and/or microG payload (and exposes a switch for it),
+that mode is offered and the ROM's own switch is used - nothing per-ROM is
+hardcoded.  gapps and microG are mutually exclusive.  The product out dir is
+cleared when the mode changes (a per-product .trang81-gms stamp tracks it).
+Artifacts land in out/tranG81-releases/<variant>/<mode>/ and non-vanilla zips
+get a -GAPPS/-MICROG suffix; boot images are collected on the vanilla pass only
+(identical across modes).  The menu has a GMS row (keys g / left / right).
 
 Telegram: create a bot with @BotFather for the token, message the bot, then get
 your chat id (e.g. https://api.telegram.org/bot<TOKEN>/getUpdates).  Then use
@@ -1419,6 +1467,9 @@ main() {
     ensure_microg_namespace
     prune_microg_unshipped
   fi
+  # what GApps/microG the tree actually provides, then the matching menu
+  rom_detect_gms
+  rom_gms_menu
 
   if [[ -z "$VARIANT" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
