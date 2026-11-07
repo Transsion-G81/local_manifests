@@ -287,6 +287,23 @@ ensure_microg_namespace() {
   info "soong    : namespaced vendor/partner_gms (microG) to avoid the gapps GmsCore clash"
 }
 
+# drop microG modules listed in PRODUCT_PACKAGES but never shipped (full builds reject them)
+prune_microg_unshipped() {
+  local dir="$ANDROID_ROOT/vendor/partner_gms" mk m tmp pat
+  mk="$dir/microg.mk"
+  [[ -r "$mk" ]] || return 0
+  for m in IchnaeaNlpBackend NominatimGeocoderBackend; do
+    pat="^[[:space:]]*$m[[:space:]]*\\\\?[[:space:]]*\$"
+    grep -qE "$pat" "$mk" || continue
+    grep -rqE "name[[:space:]]*:[[:space:]]*\"$m\"" "$dir" \
+      --include='Android.bp' --include='Android.mk' && continue
+    tmp="$mk.trang81.tmp"
+    grep -vE "$pat" "$mk" > "$tmp" && mv "$tmp" "$mk" \
+      || { rm -f "$tmp"; warn "could not prune $m from microg.mk"; continue; }
+    info "microg   : dropped unshipped module $m from microg.mk"
+  done
+}
+
 # -------------------------------------------------------------- preflight ----
 
 # refuse to start when out/ has less free space than MIN_FREE_GB.
@@ -1256,6 +1273,7 @@ main() {
   need curl; need sha1sum; need sha256sum; need base64
   find_root
   ensure_microg_namespace
+  prune_microg_unshipped
 
   if [[ -z "$VARIANT" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
