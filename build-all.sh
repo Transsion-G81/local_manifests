@@ -272,6 +272,25 @@ ensure_gms_out() {
   printf '%s' "$mode" > "$stamp"
 }
 
+# Soong: microG's vendor tree ships no soong_namespace, so its modules (GmsCore
+# and friends) land in Soong's always-exported root namespace and collide with
+# gapps' namespaced GmsCore on the gapps pass.  device.mk exports
+# vendor/partner_gms under WITH_MICROG; the namespace itself must live in the
+# tree.  The file is untracked, so a re-sync can drop it - recreate it here.
+ensure_microg_namespace() {
+  local dir="$ANDROID_ROOT/vendor/partner_gms" bp
+  [[ -d "$dir" ]] || return 0
+  bp="$dir/Android.bp"
+  if [[ -e "$bp" ]]; then
+    grep -q 'soong_namespace' "$bp" \
+      || warn "$bp exists without a soong_namespace - the gapps GmsCore collision may return"
+    return 0
+  fi
+  printf 'soong_namespace {\n}\n' > "$bp" 2>/dev/null \
+    || { warn "could not write $bp"; return 0; }
+  info "soong    : namespaced vendor/partner_gms (microG) to avoid the gapps GmsCore clash"
+}
+
 # -------------------------------------------------------------- preflight ----
 
 # refuse to start when out/ has less free space than MIN_FREE_GB.
@@ -1240,6 +1259,7 @@ main() {
   [[ -z "$NOTIFY_MODE" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] && NOTIFY_MODE="telegram"
   need curl; need sha1sum; need sha256sum; need base64
   find_root
+  ensure_microg_namespace
 
   if [[ -z "$VARIANT" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
