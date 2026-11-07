@@ -24,8 +24,9 @@ chmod +x build-all.sh
 ./build-all.sh
 
 # the menu is a pure-bash full-screen TUI: up/down move, space toggles a
-# device / the upload switch / the xgsi switch, left/right picks the variant,
-# a/n select all/none devices, x toggles xgsi, enter starts, q quits.
+# device / the upload switch / the xgsi switch / the gms row, left/right picks
+# the variant or the gms set, a/n select all/none devices, x toggles xgsi,
+# g cycles the gms set, enter starts, q quits.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
 # terminal (or with stdin piped) it falls back to the plain numbered prompts.
 
@@ -38,6 +39,20 @@ chmod +x build-all.sh
 # already built, or the copied log scripts may not land in the rom
 WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 
+# GMS variants: every device is built once per mode, in the fixed order
+# vanilla -> gapps -> microg (microG last).  vanilla is stock LineageOS; gapps
+# bakes MindTheGapps (vendor/gapps); microg bakes microG (vendor/partner_gms,
+# LineageOS already ships microG-only signature spoofing).  gapps and microG
+# are mutually exclusive, and the vanilla pass is always kept.
+./build-all.sh -v user -u yes --gapps         # vanilla + gapps
+./build-all.sh -v user -u yes --microg        # vanilla + microG
+./build-all.sh -v user -u yes --gms all       # vanilla + gapps + microG
+# gapps/microG are read from device.mk at product-config time, so the product
+# out dir is cleared whenever the mode changes (a per-product .trang81-gms
+# stamp tracks it) - no need to clean by hand.  GMS_MODES also works (comma
+# list or "all"); the mode is echoed in the TUI, the log name, the JSON and the
+# Telegram ping.
+#
 # status ping when the run ends - Telegram:
 #   1) create a bot with @BotFather and copy the token
 #   2) send the bot a message, then read your chat id from
@@ -79,6 +94,9 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 ./build-all.sh --help
 
 # outputs (under out/)
-#   out/tranG81-releases/<variant>/   zips + tagged images, links-<variant>-<ts>.txt, releases-<variant>.json
-#   out/tranG81-logs/<product>-<variant>.log
+#   out/tranG81-releases/<variant>/<mode>/   rom zip (non-vanilla ones get a
+#       -GAPPS/-MICROG suffix) + tagged boot/vendor_boot images
+#   out/tranG81-releases/links-<variant>-<ts>.txt    every upload link
+#   out/tranG81-releases/releases-<variant>.json     one record per device+mode
+#   out/tranG81-logs/<product>-<variant>-<mode>.log
 ```
