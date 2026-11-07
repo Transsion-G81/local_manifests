@@ -23,6 +23,11 @@
   <project path="device/mediatek/sepolicy_vndr" name="LineageOS/android_device_mediatek_sepolicy_vndr" remote="gitbub" revision="lineage-23.2" />
   <project path="hardware/mediatek" name="LineageOS/android_hardware_mediatek" remote="gitbub" revision="lineage-23.2" />
 
+  <!-- GMS variants (baked by build-all.sh --gms; gapps/microG are mutually
+       exclusive at build time, only one is inherited per pass) -->
+  <project path="vendor/gapps" name="MindTheGapps/vendor_gapps" remote="gitbub" revision="baklava" />
+  <project path="vendor/partner_gms" name="yaap/vendor_microg" remote="gitbub" revision="sixteen" />
+
 <!-- Keys -->
   <project path="vendor/lineage-priv/keys" name="opek098/vendor_tran_g81_keys" remote="gitbub" revision="main" />
 </manifest>
