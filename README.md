@@ -25,9 +25,11 @@ chmod +x build-all.sh
 
 # the menu is a pure-bash full-screen TUI: up/down move, space toggles a
 # device / the upload switch / the xgsi switch / the gms row, left/right picks
-# the variant or the gms set, a/n select all/none devices, x toggles xgsi,
-# g cycles the gms set, e (or enter on the "make lines" row) edits the extra
-# make lines, r reverts our tree patches and stops, enter starts, q quits.
+# the rom / the variant / the gms set, a/n select all/none devices, x toggles
+# xgsi, g cycles the gms set, e (or enter on the "make lines" row) edits the
+# extra make lines, r reverts our tree patches and stops, enter starts, q quits.
+# the "rom" row reloads the picked profile's devices and gms menu, so every
+# profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
 # terminal (or with stdin piped) it falls back to the plain numbered prompts.
 

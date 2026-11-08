@@ -104,6 +104,9 @@ DEVICES=(
   "KL5|device/tecno/KL5|vendor/tecno/KL5|KL5|KL5|radio|TECNO/KL5-OP/TECNO-KL5:14/UP1A.231005.007/240811V1304:user/release-keys"
   "KL5n|device/tecno/KL5|vendor/tecno/KL5|KL5|KL5n|radio_kl5n|TECNO/KL5n-OP/TECNO-KL5n:14/UP1A.231005.007/260710V887:user/release-keys"
 )
+# pristine list: applying a ROM prefixes DEVICES, so the TUI's ROM row needs the
+# unprefixed list to switch profiles without stacking prefixes.
+BASE_DEVICES=("${DEVICES[@]}")
 
 VARIANT=""
 REQUESTED="all"
@@ -156,11 +159,14 @@ rom_load() {
   # reset the per-ROM entry points so nothing leaks between profiles
   ROM_SETUP_CMD="lunch"; ROM_BUILD_CMD="mka"; ROM_BUILD_TYPE=""
   ROM_GMS_ARG_vanilla=""; ROM_GMS_ARG_gapps=""; ROM_GMS_ARG_microg=""
+  ROM_RELEASE_FILE=""; ROM_RELEASE_CMD=""; ROM_PRODUCT_EXTRA=""
   case "$ROM" in
     lineage)
       ROM_NAME="LineageOS"
       ROM_PREFIX="lineage_"
-      ROM_ZIP_GLOB="lineage-*.zip"
+      # mka bacon on some trees leaves "lineage_<dev>-ota.zip" rather than the
+      # release-named "lineage-<ver>-...", so match both spellings
+      ROM_ZIP_GLOB="lineage*.zip"
       ROM_VENDOR="vendor/lineage"
       ROM_GMS_OWNER="device"
       ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
@@ -359,6 +365,29 @@ rom_gms_menu() {
   fi
 }
 
+# the ROM list the TUI / plain menu offers, in profile order
+ROMS=(lineage evox yaap infinity axion)
+
+# everything the build needs from the active profile: the GMS passes the tree
+# offers, its menu, and the microG tree prep (device-owned ROMs only).
+rom_prepare() {
+  if [[ "$ROM_GMS_OWNER" == "device" ]]; then
+    ensure_microg_namespace
+    prune_microg_unshipped
+  fi
+  rom_detect_gms
+  rom_gms_menu
+}
+
+# switch the active ROM profile from the pristine device list; used by the TUI's
+# ROM row and the plain fallback menu.
+set_rom() {
+  ROM="$1"
+  DEVICES=("${BASE_DEVICES[@]}")
+  apply_rom
+  rom_prepare
+}
+
 usage() {
   cat <<'EOF'
 tranG81 - build + release every device, then upload each ROM to Buzzheavier.
@@ -377,10 +406,12 @@ or point ANDROID_ROOT at it.  The ROM is chosen with --rom (default lineage):
 The menu is a pure-bash full-screen TUI (arrow keys, checkboxes, colours) -
 dialog, whiptail and fzf are not used and nothing has to be installed.  Piping
 stdin or running without a terminal falls back to plain numbered prompts.  The
-"make lines" row edits the lines a ROM profile appends to the product makefile
-(bottom of the file, for the build only - see PRODUCT_EXTRA_LINES below); the
-"r" key reverse-applies the patches our device trees drop into the source and
-stops (same as --revert-patches).
+"rom" row selects the ROM profile (default lineage, same as --rom) and reloads
+that profile's devices and GMS menu, so e.g. AxionOS can be built from the menu
+alone; the "make lines" row edits the lines a ROM profile appends to the product
+makefile (bottom of the file, for the build only - see PRODUCT_EXTRA_LINES
+below); the "r" key reverse-applies the patches our device trees drop into the
+source and stops (same as --revert-patches).
 
 Every ROM is configured and built through its own entry points, taken from its
 profile: lineage, evox, yaap and infinity use lunch + mka, AxionOS uses its own
@@ -1401,6 +1432,7 @@ TUI_VARIANTS=(user userdebug eng)
 declare -a TUI_GMS_MODES=() TUI_GMS_LABELS=()
 declare -a MENU_GMS_OPTS=() MENU_GMS_WANTS=()
 declare -a TUI_SEL=()
+TUI_ROM=0
 
 tui_cleanup() {
   [[ -n "$TUI_STTY" ]] && stty "$TUI_STTY" </dev/tty 2>/dev/null
@@ -1455,6 +1487,15 @@ tui_cycle() {   # move the variant by $1 (+1 / -1)
 
 tui_mark() { (( $1 == TUI_FOCUS )) && printf " ${c_bold}>${c_reset} " || printf '   '; }
 
+# move the ROM row by $1 (right/left) and reload that profile's devices + menus
+tui_cycle_rom() {
+  local dir=1
+  [[ "$1" == left ]] && dir=-1
+  TUI_ROM=$(((TUI_ROM + dir + ${#ROMS[@]}) % ${#ROMS[@]}))
+  set_rom "${ROMS[$TUI_ROM]}"
+  (( TUI_GMS < ${#TUI_GMS_MODES[@]} )) || TUI_GMS=0
+}
+
 # Edit the make lines appended (for the build only) to the product makefile.
 # Raw TUI mode cannot read a line, so drop back to the saved tty settings for
 # the prompt and restore raw mode before redrawing.
@@ -1490,47 +1531,54 @@ tui_render() {
   printf '  %s%s%s\033[K\n' "$c_cyn" '────────────────────────────────────────────────────────────' "$c_reset"
   printf '\033[K\n'
 
-  printf '   %svariant%s  ' "$c_cyn" "$c_reset"
-  for lab in "${TUI_VARIANTS[@]}"; do
-    if [[ "$lab" == "$TUI_VARIANT" ]]; then printf '%s %s %s ' "$c_rev" "$lab" "$c_reset"
-    else printf ' %s  ' "$lab"; fi
-  done
+  row="$(tui_mark 0)"
+  row+="rom      "
+  (( TUI_FOCUS == 0 )) && row+="${c_bold}< $ROM >${c_reset}" || row+="< $ROM >"
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
+
+  row="$(tui_mark 1)"
+  row+="variant  "
+  for lab in "${TUI_VARIANTS[@]}"; do
+    if [[ "$lab" == "$TUI_VARIANT" ]]; then row+="${c_rev} $lab ${c_reset} "
+    else row+=" $lab  "; fi
+  done
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
   printf '   %sdevices%s  (space toggles, a all, n none)\033[K\n' "$c_cyn" "$c_reset"
   for ((i = 0; i < n; i++)); do
     short="${DEVICES[$i]%%|*}"; short="${short#$ROM_PREFIX}"
-    row="$(tui_mark $((i + 1)))"
+    row="$(tui_mark $((i + 2)))"
     (( TUI_SEL[i] )) && row+="[x] " || row+="[ ] "
-    (( TUI_FOCUS == i + 1 )) && row+="${c_bold}${short}${c_reset}" || row+="$short"
+    (( TUI_FOCUS == i + 2 )) && row+="${c_bold}${short}${c_reset}" || row+="$short"
     printf '%s\033[K\n' "$row"
   done
   printf '\033[K\n'
 
-  row="$(tui_mark $((n + 1)))"
-  [[ "$TUI_UPLOAD" == "yes" ]] && row+="[x] " || row+="[ ] "
-  (( TUI_FOCUS == n + 1 )) && row+="${c_bold}upload to Buzzheavier${c_reset}" || row+="upload to Buzzheavier"
-  printf '%s\033[K\n' "$row"
-
   row="$(tui_mark $((n + 2)))"
-  [[ "$TUI_XGSI" == "yes" ]] && row+="[x] " || row+="[ ] "
-  (( TUI_FOCUS == n + 2 )) && row+="${c_bold}xgsi boot/dmesg logs${c_reset}" || row+="xgsi boot/dmesg logs"
+  [[ "$TUI_UPLOAD" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 2 )) && row+="${c_bold}upload to Buzzheavier${c_reset}" || row+="upload to Buzzheavier"
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 3)))"
-  row+="gms  "
-  (( TUI_FOCUS == n + 3 )) && row+="${c_bold}< ${TUI_GMS_LABELS[$TUI_GMS]} >${c_reset}" || row+="< ${TUI_GMS_LABELS[$TUI_GMS]} >"
+  [[ "$TUI_XGSI" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 3 )) && row+="${c_bold}xgsi boot/dmesg logs${c_reset}" || row+="xgsi boot/dmesg logs"
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 4)))"
+  row+="gms  "
+  (( TUI_FOCUS == n + 4 )) && row+="${c_bold}< ${TUI_GMS_LABELS[$TUI_GMS]} >${c_reset}" || row+="< ${TUI_GMS_LABELS[$TUI_GMS]} >"
+  printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 5)))"
   if [[ -n "$TUI_LINES" ]]; then lab="${TUI_LINES//$'\n'/; }"; (( ${#lab} > 44 )) && lab="${lab:0:41}..."
   else lab="(none)"; fi
-  (( TUI_FOCUS == n + 4 )) && row+="${c_bold}make lines: $lab${c_reset}" || row+="make lines: $lab"
+  (( TUI_FOCUS == n + 5 )) && row+="${c_bold}make lines: $lab${c_reset}" || row+="make lines: $lab"
   printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
-  printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant/gms   %sa%s all   %sn%s none\033[K\n' \
+  printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s rom/variant/gms   %sa%s all   %sn%s none\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
   printf '   %sx%s xgsi   %sg%s gms   %se%s make lines   %sr%s revert   %senter%s start   %sq%s quit\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
@@ -1541,6 +1589,8 @@ tui_render() {
 tui_run() {
   local n=${#DEVICES[@]} i key short req="" all=1 any
   TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0; REVERT_PATCHES="no"
+  TUI_ROM=0
+  for i in "${!ROMS[@]}"; do [[ "${ROMS[$i]}" == "$ROM" ]] && TUI_ROM=$i; done
   TUI_SEL=()
   for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done
   [[ -n "${VARIANT:-}" ]] && TUI_VARIANT="$VARIANT"
@@ -1558,20 +1608,22 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 4 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 5 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
-        if   (( TUI_FOCUS == 0 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
-        elif (( TUI_FOCUS == n + 3 )); then
+        if   (( TUI_FOCUS == 0 ));     then tui_cycle_rom "$key"
+        elif (( TUI_FOCUS == 1 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
+        elif (( TUI_FOCUS == n + 4 )); then
           if [[ "$key" == left ]]; then TUI_GMS=$(((TUI_GMS + ${#TUI_GMS_MODES[@]} - 1) % ${#TUI_GMS_MODES[@]}))
           else TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]})); fi
         fi ;;
       space)
-        if   (( TUI_FOCUS == 0 ));     then tui_cycle 1
-        elif (( TUI_FOCUS == n + 1 )); then [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes"
-        elif (( TUI_FOCUS == n + 2 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
-        elif (( TUI_FOCUS == n + 3 )); then TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]}))
-        elif (( TUI_FOCUS == n + 4 )); then tui_edit_lines
-        else TUI_SEL[TUI_FOCUS - 1]=$((1 - TUI_SEL[TUI_FOCUS - 1]))
+        if   (( TUI_FOCUS == 0 ));     then tui_cycle_rom right
+        elif (( TUI_FOCUS == 1 ));     then tui_cycle 1
+        elif (( TUI_FOCUS == n + 2 )); then [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes"
+        elif (( TUI_FOCUS == n + 3 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
+        elif (( TUI_FOCUS == n + 4 )); then TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]}))
+        elif (( TUI_FOCUS == n + 5 )); then tui_edit_lines
+        else TUI_SEL[TUI_FOCUS - 2]=$((1 - TUI_SEL[TUI_FOCUS - 2]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
       xgsi)   [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes" ;;
@@ -1586,7 +1638,7 @@ tui_run() {
       all)  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done ;;
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
-        if (( TUI_FOCUS == n + 4 )); then tui_edit_lines; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 5 )); then tui_edit_lines; tui_render; continue; fi
         any=0
         for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
         if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
@@ -1613,7 +1665,15 @@ tui_run() {
 
 # plain ask() flow, used when there is no terminal to draw on
 menu_ask() {
-  local v i short gm gi xd
+  local v i short gm gi xd r
+
+  say ""
+  info "rom"
+  select r in "${ROMS[@]}"; do
+    [[ -n "${r:-}" ]] && break
+    warn "pick a number"
+  done
+  [[ "$r" == "$ROM" ]] || set_rom "$r"
 
   say ""
   info "build variant"
@@ -1769,13 +1829,8 @@ main() {
   [[ -z "$NOTIFY_MODE" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] && NOTIFY_MODE="telegram"
   need curl; need sha1sum; need sha256sum; need base64
   find_root
-  if [[ "$ROM_GMS_OWNER" == "device" ]]; then
-    ensure_microg_namespace
-    prune_microg_unshipped
-  fi
   # what GApps/microG the tree actually provides, then the matching menu
-  rom_detect_gms
-  rom_gms_menu
+  rom_prepare
 
   if [[ -z "$VARIANT" && "$REVERT_PATCHES" != "yes" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
