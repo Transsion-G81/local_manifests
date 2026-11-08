@@ -320,7 +320,9 @@ or point ANDROID_ROOT at it.  The ROM is chosen with --rom (default lineage):
 
 The menu is a pure-bash full-screen TUI (arrow keys, checkboxes, colours) -
 dialog, whiptail and fzf are not used and nothing has to be installed.  Piping
-stdin or running without a terminal falls back to plain numbered prompts.
+stdin or running without a terminal falls back to plain numbered prompts.  The
+"make lines" row edits the lines a ROM profile appends to the product makefile
+(bottom of the file, for the build only - see PRODUCT_EXTRA_LINES below).
 
 Before every build it sha1-checks each radio (firmware) image the vendor tree
 declares for that product, so a wrong or mixed-up firmware is refused.  After
@@ -1229,6 +1231,7 @@ TUI_UPLOAD="yes"
 TUI_XGSI="no"
 TUI_GMS=0
 TUI_STATUS=""
+TUI_LINES=""
 TUI_STTY=""
 TUI_VARIANTS=(user userdebug eng)
 declare -a TUI_GMS_MODES=() TUI_GMS_LABELS=()
@@ -1271,6 +1274,7 @@ tui_key() {
     u|U)  printf 'upload' ;;
     x|X)  printf 'xgsi' ;;
     g|G)  printf 'gms' ;;
+    e|E)  printf 'edit' ;;
     *)    printf 'noop' ;;
   esac
 }
@@ -1285,6 +1289,34 @@ tui_cycle() {   # move the variant by $1 (+1 / -1)
 }
 
 tui_mark() { (( $1 == TUI_FOCUS )) && printf " ${c_bold}>${c_reset} " || printf '   '; }
+
+# Edit the make lines appended (for the build only) to the product makefile.
+# Raw TUI mode cannot read a line, so drop back to the saved tty settings for
+# the prompt and restore raw mode before redrawing.
+tui_edit_lines() {
+  local l out="" typed=0
+  stty "$TUI_STTY" </dev/tty 2>/dev/null
+  printf '\033[?25h\033[2J\033[H'
+  printf '  %smake lines%s appended to the bottom of the product makefile\n' "$c_cyn" "$c_reset"
+  printf '  for the build only - removed again afterwards, so the tree stays clean.\n\n'
+  if [[ -n "$TUI_LINES" ]]; then
+    printf '  current:\n'; printf '%s\n' "$TUI_LINES" | sed 's/^/    /'
+  else
+    printf '  current: (none)\n'
+  fi
+  printf '\n  type one line per entry, blank line to finish, "-" to clear.\n'
+  printf '  e.g.  AXION_PROCESSOR := MediaTek_Helio_G81\n'
+  printf '        AXION_MAINTAINER := your_name\n\n'
+  while IFS= read -r l </dev/tty; do
+    [[ -z "$l" ]] && break
+    typed=1
+    [[ "$l" == "-" ]] && { out=""; break; }
+    out+="${out:+$'\n'}$l"
+  done
+  (( typed )) && TUI_LINES="$out"
+  stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+  printf '\033[2J\033[?25l'
+}
 
 tui_render() {
   local n=${#DEVICES[@]} i lab short row
@@ -1325,12 +1357,18 @@ tui_render() {
   row+="gms  "
   (( TUI_FOCUS == n + 3 )) && row+="${c_bold}< ${TUI_GMS_LABELS[$TUI_GMS]} >${c_reset}" || row+="< ${TUI_GMS_LABELS[$TUI_GMS]} >"
   printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 4)))"
+  if [[ -n "$TUI_LINES" ]]; then lab="${TUI_LINES//$'\n'/; }"; (( ${#lab} > 44 )) && lab="${lab:0:41}..."
+  else lab="(none)"; fi
+  (( TUI_FOCUS == n + 4 )) && row+="${c_bold}make lines: $lab${c_reset}" || row+="make lines: $lab"
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
   printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant/gms   %sa%s all   %sn%s none\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
-  printf '   %sx%s xgsi   %sg%s gms   %senter%s start   %sq%s quit\033[K\n' \
-    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
+  printf '   %sx%s xgsi   %sg%s gms   %se%s make lines   %senter%s start   %sq%s quit\033[K\n' \
+    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
   [[ -n "$TUI_STATUS" ]] && printf '   %s%s%s\033[K\n' "$c_yel" "$TUI_STATUS" "$c_reset" || printf '\033[K\n'
   printf '\033[J'
 }
@@ -1342,6 +1380,7 @@ tui_run() {
   for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done
   [[ -n "${VARIANT:-}" ]] && TUI_VARIANT="$VARIANT"
   [[ -n "${WITH_XGSI_LOGS:-}" ]] && TUI_XGSI="yes" || TUI_XGSI="no"
+  TUI_LINES="${PRODUCT_EXTRA_LINES:-}"
 
   TUI_STTY="$(stty -g </dev/tty 2>/dev/null)"
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
@@ -1354,7 +1393,7 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 3 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 4 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
         if   (( TUI_FOCUS == 0 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
         elif (( TUI_FOCUS == n + 3 )); then
@@ -1366,14 +1405,17 @@ tui_run() {
         elif (( TUI_FOCUS == n + 1 )); then [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes"
         elif (( TUI_FOCUS == n + 2 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
         elif (( TUI_FOCUS == n + 3 )); then TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]}))
+        elif (( TUI_FOCUS == n + 4 )); then tui_edit_lines
         else TUI_SEL[TUI_FOCUS - 1]=$((1 - TUI_SEL[TUI_FOCUS - 1]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
       xgsi)   [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes" ;;
       gms)    TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]})) ;;
+      edit)   tui_edit_lines ;;
       all)  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done ;;
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
+        if (( TUI_FOCUS == n + 4 )); then tui_edit_lines; tui_render; continue; fi
         any=0
         for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
         if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
@@ -1394,6 +1436,7 @@ tui_run() {
   DO_UPLOAD="$TUI_UPLOAD"
   [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
   GMS_WANT=("${TUI_GMS_MODES[$TUI_GMS]}")
+  PRODUCT_EXTRA_LINES="$TUI_LINES"
   [[ "$all" == 1 ]] && REQUESTED="all" || REQUESTED="$req"
 }
 
@@ -1435,6 +1478,9 @@ menu_ask() {
 
   [[ -n "$WITH_XGSI_LOGS" ]] && xd="y" || xd="n"
   [[ "$(ask "xgsi boot/dmesg logs?" "$xd")" =~ ^[Yy] ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
+
+  say ""
+  PRODUCT_EXTRA_LINES="$(ask "make lines to append to the product makefile (blank = keep)" "$PRODUCT_EXTRA_LINES")"
 }
 
 interactive_menu() {

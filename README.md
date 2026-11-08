@@ -26,7 +26,8 @@ chmod +x build-all.sh
 # the menu is a pure-bash full-screen TUI: up/down move, space toggles a
 # device / the upload switch / the xgsi switch / the gms row, left/right picks
 # the variant or the gms set, a/n select all/none devices, x toggles xgsi,
-# g cycles the gms set, enter starts, q quits.
+# g cycles the gms set, e (or enter on the "make lines" row) edits the extra
+# make lines, enter starts, q quits.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
 # terminal (or with stdin piped) it falls back to the plain numbered prompts.
 
@@ -98,7 +99,8 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 # some ROMs want extra make lines at the very bottom of
 # device/<tree>/lineage_<device>.mk; the script appends them for the build and
 # takes them off again, so the shared tree stays clean (axion already injects
-# TARGET_DISABLE_EPPE; add the AXION_* device-info lines this way):
+# TARGET_DISABLE_EPPE; add the AXION_* device-info lines this way, or through
+# the TUI's "make lines" row):
 PRODUCT_EXTRA_LINES="AXION_PROCESSOR := MediaTek_Helio_G81" ./build-all.sh --rom axion -v user
 # per device: PRODUCT_EXTRA_LINES_X6532="AXION_CAMERA_REAR_INFO := 50,48"
 
