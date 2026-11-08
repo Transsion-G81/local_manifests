@@ -401,7 +401,8 @@ Options:
   -a, --account ID                   Buzzheavier account id (else anonymous)
       --folder ID                    upload into this Buzzheavier directory id
       --no-note                      skip the Buzzheavier note
-      --jobs N                       make -jN (default: mka default)
+      --jobs N                       parallel jobs for the ROM's build
+                                     (default: mka/ax default)
       --ccache SIZE                  enable ccache and cap it at SIZE (e.g. 50G)
       --no-build                     skip building; re-upload collected artifacts
       --notify TARGET                status ping: a Discord/Slack webhook URL,
@@ -423,7 +424,7 @@ Options:
   -h, --help                         this text
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
-     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  GMS_MODES  MAKE_TARGET
+     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  GMS_MODES  MAKE_TARGET (mka ROMs)
      PRODUCT_EXTRA_LINES (make lines appended to the product makefile for the
      build, e.g. "AXION_PROCESSOR := MediaTek_Helio_G81"; PRODUCT_EXTRA_LINES_<device>
      overrides it per device, e.g. PRODUCT_EXTRA_LINES_X6532)
