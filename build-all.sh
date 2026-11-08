@@ -1771,7 +1771,8 @@ main() {
   say "======================================================================"
   info "rom      : $ROM_NAME ($ROM)"
   info "variant  : $VARIANT"
-  info "release  : ${LUNCH_RELEASE:--}"
+  [[ -n "$LUNCH_RELEASE" ]] && info "release  : $LUNCH_RELEASE"
+  info "build    : $ROM_SETUP_CMD + $(rom_build_args | tr '\n' ' ' | sed 's/ *$//')"
   info "root     : $ANDROID_ROOT"
   if [[ "$DO_UPLOAD" == "yes" ]]; then
     info "upload   : yes $([[ -n "$BUZZ_ACCOUNT_ID" ]] && echo "(account)" || echo "(anonymous)")"
