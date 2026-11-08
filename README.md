@@ -101,6 +101,9 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 ./build-all.sh -v userdebug --release bp4a
 
 # custom ROM profile: --rom lineage (default), evox, yaap, infinity or axion
+# each profile carries the ROM's own build entry points: lineage/evox/yaap/
+# infinity use lunch + mka; axion runs its "axion <codename> <variant> <gms>"
+# then "ax -b", so its GMS choice is the gms arg (vanilla or gms)
 ./build-all.sh --rom axion -v user -u yes
 
 # some ROMs want extra make lines at the very bottom of

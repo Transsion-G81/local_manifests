@@ -83,6 +83,12 @@ ROM_MICROG_TOGGLE=""
 ROM_RELEASE_FILE=""
 ROM_RELEASE_CMD=""
 ROM_LUNCH_STYLE=""
+ROM_SETUP_CMD="lunch"     # the ROM's own "configure a device" command
+ROM_BUILD_CMD="mka"       # the ROM's own build command
+ROM_BUILD_TYPE=""         # extra build flag (AxionOS: -b bacon)
+ROM_GMS_ARG_vanilla=""    # GMS choice passed to ROM_SETUP_CMD (ROM_GMS_OWNER=cmd)
+ROM_GMS_ARG_gapps=""
+ROM_GMS_ARG_microg=""
 ROM_PRODUCT_EXTRA=""
 
 # images collected and uploaded next to the ROM zip (tagged per product);
@@ -147,6 +153,9 @@ die()  { err "$*"; exit 1; }
 # microG modes come from rom_detect_gms(), which reads what the tree ships
 # instead of hardcoding per-ROM switch names.
 rom_load() {
+  # reset the per-ROM entry points so nothing leaks between profiles
+  ROM_SETUP_CMD="lunch"; ROM_BUILD_CMD="mka"; ROM_BUILD_TYPE=""
+  ROM_GMS_ARG_vanilla=""; ROM_GMS_ARG_gapps=""; ROM_GMS_ARG_microg=""
   case "$ROM" in
     lineage)
       ROM_NAME="LineageOS"
@@ -186,15 +195,21 @@ rom_load() {
       ;;
     axion)
       # AxionOS keeps the Lineage tree (its own vendor/lineage fork) and its
-      # device trees ship lineage_* products, so lunch and the release pin
-      # follow Lineage exactly - only the artifact name differs.
+      # device trees ship lineage_* products, but it is configured and built
+      # through its own commands, not lunch/mka:  "axion <codename> <variant>
+      # <gms>" then "ax -b" (its README).  The GMS choice is an argument to
+      # that command, so rom_detect_gms() reads the passes from ROM_GMS_ARG_*.
       ROM_NAME="AxionOS"
       ROM_PREFIX="lineage_"
       ROM_ZIP_GLOB="axion-*.zip"
       ROM_VENDOR="vendor/lineage"
-      ROM_GMS_OWNER="rom"
-      ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
-      ROM_LUNCH_STYLE="release"
+      ROM_GMS_OWNER="cmd"
+      ROM_LUNCH_STYLE="axion"
+      ROM_SETUP_CMD="axion"
+      ROM_BUILD_CMD="ax"
+      ROM_BUILD_TYPE="-b"                 # bacon -> the flashable zip
+      ROM_GMS_ARG_vanilla="vanilla"
+      ROM_GMS_ARG_gapps="gms"             # axion's full-GMS arg
       # Axion's common mk turns on package-existence enforcement, which its
       # README tells device trees to opt out of; inject it so our Lineage-based
       # tree does not have to carry an Axion-only line.
@@ -220,6 +235,15 @@ rom_detect_gms() {
     ROM_GMS_VARS="WITH_GAPPS WITH_MICROG"
     ROM_GMS_ENV_gapps="WITH_GAPPS=true"
     ROM_GMS_ENV_microg="WITH_MICROG=true"
+    return 0
+  fi
+
+  if [[ "$ROM_GMS_OWNER" == cmd ]]; then
+    # the ROM's own configure command takes the GMS choice as an argument, so
+    # offer the passes its profile knows an argument for (AxionOS: vanilla/gms)
+    ROM_MODES="vanilla"
+    [[ -n "$ROM_GMS_ARG_gapps" ]] && ROM_MODES+=" gapps"
+    [[ -n "$ROM_GMS_ARG_microg" ]] && ROM_MODES+=" microg"
     return 0
   fi
 
@@ -269,11 +293,33 @@ rom_gms_env() {
   printf '%s' "${!n:-}"
 }
 
-# the lunch arguments for <product> <variant>, as separate words
-rom_lunch_args() {
+# the GMS value the ROM's own configure command wants for a mode; empty when
+# the ROM reads its GMS choice from the environment instead (AxionOS: "gms").
+rom_gms_arg() {
+  local n="ROM_GMS_ARG_$1"
+  printf '%s' "${!n:-}"
+}
+
+# how to build: the command and flags for the active ROM, one word per line.
+# mka takes the make target; AxionOS's ax takes a build-type flag instead.
+rom_build_args() {
+  printf '%s\n' "$ROM_BUILD_CMD"
+  case "$ROM_BUILD_CMD" in
+    make|mka) printf '%s\n' "$MAKE_TARGET" ;;
+  esac
+  [[ -n "$ROM_BUILD_TYPE" ]] && printf '%s\n' "$ROM_BUILD_TYPE"
+  [[ -n "$JOBS" ]] && printf '%s\n' "-j$JOBS"
+  return 0
+}
+
+# the arguments the ROM's configure command takes for <product> <variant>:
+# lineage wants a release config, AxionOS's axion wants <codename> <variant>
+# <gms>, the rest just take the product.
+rom_setup_args() {
   case "$ROM_LUNCH_STYLE" in
     release) printf '%s %s %s' "$1" "$LUNCH_RELEASE" "$2" ;;
     dash)    printf '%s-%s' "$1" "$2" ;;
+    axion)   printf '%s %s %s' "${1#$ROM_PREFIX}" "$2" "$(rom_gms_arg "$GMS_MODE")" ;;
     *)       printf '%s %s' "$1" "$2" ;;
   esac
 }
@@ -326,6 +372,11 @@ stdin or running without a terminal falls back to plain numbered prompts.  The
 (bottom of the file, for the build only - see PRODUCT_EXTRA_LINES below); the
 "r" key reverse-applies the patches our device trees drop into the source and
 stops (same as --revert-patches).
+
+Every ROM is configured and built through its own entry points, taken from its
+profile: lineage, evox, yaap and infinity use lunch + mka, AxionOS uses its own
+"axion <codename> <variant> <gms>" then "ax -b".  AxionOS's GMS choice rides on
+that command (gms arg = vanilla|gms), and the build loop hardcodes none of it.
 
 Before every build it sha1-checks each radio (firmware) image the vendor tree
 declares for that product, so a wrong or mixed-up firmware is refused.  After
@@ -1133,8 +1184,9 @@ inject_product_lines() {
 
 run_build() {
   local product="$1" variant="$2" nfc="$3" devtree="$4" log="$5"
-  local rc gmsenv="" extra pmk=""
+  local rc gmsenv="" extra pmk="" mk=()
   extra="$(product_extra_lines "${product#$ROM_PREFIX}")"
+  mapfile -t mk < <(rom_build_args)
 
   [[ -n "$LUNCH_RELEASE" ]] || LUNCH_RELEASE="$(resolve_release "$product")"
 
@@ -1145,8 +1197,8 @@ run_build() {
   if [[ "$DRY_RUN" == "yes" ]]; then
     say "    cd $ANDROID_ROOT"
     say "    source build/envsetup.sh   (PATCH_NFC=$([[ "$nfc" == 1 ]] && echo true || echo unset)${gmsenv:+ $gmsenv})"
-    say "    lunch $(rom_lunch_args "$product" "$variant")"
-    say "    mka ${MAKE_TARGET}${JOBS:+ -j$JOBS}"
+    say "    $ROM_SETUP_CMD $(rom_setup_args "$product" "$variant")"
+    say "    ${mk[*]}"
     if [[ -n "$extra" ]]; then
       say "    + append to the bottom of $devtree/$product.mk (not committed):"
       printf '%s\n' "$extra" | sed 's/^/        /'
@@ -1176,9 +1228,9 @@ run_build() {
   rc=$?
   if [[ "$rc" -eq 0 ]]; then
     # shellcheck disable=SC2086
-    lunch $(rom_lunch_args "$product" "$variant"); rc=$?
+    $ROM_SETUP_CMD $(rom_setup_args "$product" "$variant"); rc=$?
     if [[ "$rc" -ne 0 ]]; then
-      warn "lunch $(rom_lunch_args "$product" "$variant") failed${LUNCH_RELEASE:+ - pass --release NAME}"
+      warn "$ROM_SETUP_CMD $(rom_setup_args "$product" "$variant") failed${LUNCH_RELEASE:+ - pass --release NAME}"
       [[ -n "$ROM_RELEASE_FILE" ]] && warn "   release pin: $ROM_RELEASE_FILE"
     fi
   fi
@@ -1186,8 +1238,6 @@ run_build() {
     verify_nfc_patches "$devtree" || rc=1
   fi
 
-  local -a mk=(mka "$MAKE_TARGET")
-  [[ -n "$JOBS" ]] && mk+=("-j$JOBS")
   if [[ "$rc" -eq 0 ]]; then
     say "+ ${mk[*]}   (log: ${log#$ANDROID_ROOT/})"
     "${mk[@]}" 2>&1 | tee "$log"
