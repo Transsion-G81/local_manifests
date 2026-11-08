@@ -1169,15 +1169,38 @@ revert_selected_patches() {
 }
 
 # a device build runs for an hour; surface why it died instead of "see the log".
+# ninja cancels every action it still has queued once it stops, so the tail of a
+# failed log is a wall of "error: action cancelled when ninja exited"; the cause is
+# the first FAILED block that is not one of those cancellations (the cascade's
+# Error: line is always the 3rd line of a block).
 show_build_errors() {
-  local log="$1" hits
+  local log="$1" blk hits
   [[ -f "$log" ]] || return 0
-  hits=$(grep -nE 'FAILED:|error:|fatal error|ninja: build stopped' "$log" 2>/dev/null | tail -n 12)
+  blk=$(awk '
+    /^FAILED:/ {
+      if (done) next
+      if (inb) { print b; done=1; next }
+      inb=1; b=$0; n=0; next
+    }
+    inb {
+      b = b "\n" $0; n++
+      if (n == 2 && $0 ~ /action cancelled when ninja exited/) { inb=0; next }
+      if (n >= 4) { print b; done=1; inb=0 }
+    }
+    END { if (inb) print b }
+  ' "$log")
+  if [[ -n "$blk" ]]; then
+    say "   ---- first real error (${log##*/}) ----"
+    printf '%s\n' "$blk" | sed 's/^/   /'
+    return 0
+  fi
+  hits=$(grep -nE 'error:|fatal error|ninja: build stopped' "$log" 2>/dev/null \
+         | grep -v 'action cancelled when ninja exited' | head -n 12)
   if [[ -n "$hits" ]]; then
-    say "   ---- last errors (${log##*/}) ----"
+    say "   ---- first errors (${log##*/}) ----"
     printf '%s\n' "$hits" | sed 's/^/   /'
   else
-    say "   ---- no error lines; tail of ${log##*/} ----"
+    say "   ---- no real error; build was most likely killed (${log##*/}) ----"
     tail -n 8 "$log" | sed 's/^/   /'
   fi
 }
