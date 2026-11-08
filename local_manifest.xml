@@ -19,8 +19,14 @@
   <project name="Transsion-G81/android_kernel_tecno_KL5" path="device/tecno/KL5-kernel" remote="gitbub" revision="lineage-23.2" />
   
  <!-- Device Support stuffs -->
+  <!-- A ROM's own manifest may already define these paths (Axion ships
+       device/mediatek/sepolicy_vndr). Drop its copy first so our pinned revision
+       wins instead of failing on a duplicate path. -->
+  <remove-project path="vendor/mediatek/ims" optional="true" />
   <project path="vendor/mediatek/ims" name="techyminati/android_vendor_mediatek_ims" remote="gitbub" revision="android-16-qpr2" />
+  <remove-project path="device/mediatek/sepolicy_vndr" optional="true" />
   <project path="device/mediatek/sepolicy_vndr" name="LineageOS/android_device_mediatek_sepolicy_vndr" remote="gitbub" revision="lineage-23.2" />
+  <remove-project path="hardware/mediatek" optional="true" />
   <project path="hardware/mediatek" name="LineageOS/android_hardware_mediatek" remote="gitbub" revision="lineage-23.2" />
 
   <!-- GMS variants, baked by build-all.sh (see the gms option there); gapps and
