@@ -107,6 +107,7 @@ KEEP_GOING="no"
 DRY_RUN="no"
 CHECK_ONLY="no"
 NO_BUILD="no"
+REVERT_PATCHES="no"
 NOTIFY_URL=""
 ANDROID_ROOT="${ANDROID_ROOT:-}"
 
@@ -322,7 +323,9 @@ The menu is a pure-bash full-screen TUI (arrow keys, checkboxes, colours) -
 dialog, whiptail and fzf are not used and nothing has to be installed.  Piping
 stdin or running without a terminal falls back to plain numbered prompts.  The
 "make lines" row edits the lines a ROM profile appends to the product makefile
-(bottom of the file, for the build only - see PRODUCT_EXTRA_LINES below).
+(bottom of the file, for the build only - see PRODUCT_EXTRA_LINES below); the
+"r" key reverse-applies the patches our device trees drop into the source and
+stops (same as --revert-patches).
 
 Before every build it sha1-checks each radio (firmware) image the vendor tree
 declares for that product, so a wrong or mixed-up firmware is refused.  After
@@ -357,6 +360,9 @@ Options:
       --keep-going                   keep building the rest after a failure
       --dry-run                      print the plan, touch nothing
       --check-only                   run the firmware safety checks and stop
+      --revert-patches               reverse-apply the patches our device trees
+                                     drop into the source (SystemUI, NFC HAL)
+                                     for the selected devices, then stop
       --gms MODES                    GMS passes per device: vanilla (default),
                                      vanilla,gapps, vanilla,microg, or all
                                      (= vanilla,gapps,microg).  Built in that
@@ -984,6 +990,68 @@ verify_nfc_patches() {
   info "$n NFC patches verified"
 }
 
+# ---- reverting the patches our trees apply ----------------------------------
+# <devtree>/patches/<set>/ holds patches the device's vendorsetup.sh drops into
+# another project of the tree.  --revert-patches / the TUI 'r' key take them
+# back off (reverse-apply) as maintenance.  A later build re-applies them
+# through envsetup unless PATCH_SHADE=0 / PATCH_NFC stays unset.
+declare -A PATCH_SET_REPO=(
+  [systemui]="frameworks/base"     # device/infinix/X6532/patches/systemui
+  [nfc]="hardware/nxp/nfc"         # device/tecno/KL5/patches/nfc
+)
+
+# reverse-apply one set; a patch that is not applied is skipped, so running it
+# twice is safe.  Returns 1 if any patch could not be reverted.
+revert_patch_set() {
+  local repo="$1" pdir="$2" p name rc=0
+  local r="$ANDROID_ROOT/$repo"
+  for p in "$pdir"/[0-9][0-9][0-9][0-9]-*.patch; do
+    [[ -f "$p" ]] || continue
+    name="$(basename "$p")"
+    if git -C "$r" apply --reverse --check "$p" 2>/dev/null; then
+      if git -C "$r" apply --reverse "$p" 2>/dev/null; then ok "reverted  $name"
+      else err "could not revert $name (git apply --reverse failed)"; rc=1; fi
+    elif git -C "$r" apply --check "$p" 2>/dev/null; then
+      say "          $name: not applied"
+    elif patch -p1 --reverse --dry-run --fuzz=3 -d "$r" -i "$p" >/dev/null 2>&1; then
+      if patch -p1 --reverse --fuzz=3 --no-backup-if-mismatch -d "$r" -i "$p" >/dev/null 2>&1; then
+        ok "reverted  $name (patch -R)"
+      else err "could not revert $name (patch -R failed)"; rc=1; fi
+    elif patch -p1 --dry-run --fuzz=3 -d "$r" -i "$p" >/dev/null 2>&1; then
+      say "          $name: not applied"
+    else
+      warn "$name: neither applied nor revertible - $repo drifted, fix by hand"; rc=1
+    fi
+  done
+  return "$rc"
+}
+
+# revert every set the selected devices' trees apply, once per distinct tree
+# (X6531B shares device/infinix/X6531, KL5n device/tecno/KL5).
+revert_selected_patches() {
+  local entry product devtree set pdir seen=" " rc=0 n
+  for entry in "${SELECTED[@]}"; do
+    IFS='|' read -r product devtree _ <<<"$entry"
+    [[ "$seen" == *" $devtree "* ]] && continue
+    seen+="$devtree "
+    n=0
+    for pdir in "$ANDROID_ROOT/$devtree/patches"/*/; do
+      [[ -d "$pdir" ]] || continue
+      set="$(basename "$pdir")"
+      n=$((n + 1))
+      if [[ -z "${PATCH_SET_REPO[$set]:-}" ]]; then
+        warn "$devtree/patches/$set: target repo unknown - skipped (add it to PATCH_SET_REPO)"
+        rc=1; continue
+      fi
+      say ""
+      info "$devtree/patches/$set -> ${PATCH_SET_REPO[$set]}"
+      revert_patch_set "${PATCH_SET_REPO[$set]}" "$pdir" || rc=1
+    done
+    (( n )) || { say ""; warn "$devtree/patches: no patch sets found"; }
+  done
+  return "$rc"
+}
+
 # a device build runs for an hour; surface why it died instead of "see the log".
 show_build_errors() {
   local log="$1" hits
@@ -1275,6 +1343,7 @@ tui_key() {
     x|X)  printf 'xgsi' ;;
     g|G)  printf 'gms' ;;
     e|E)  printf 'edit' ;;
+    r|R)  printf 'revert' ;;
     *)    printf 'noop' ;;
   esac
 }
@@ -1367,15 +1436,15 @@ tui_render() {
 
   printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s variant/gms   %sa%s all   %sn%s none\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
-  printf '   %sx%s xgsi   %sg%s gms   %se%s make lines   %senter%s start   %sq%s quit\033[K\n' \
-    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
+  printf '   %sx%s xgsi   %sg%s gms   %se%s make lines   %sr%s revert   %senter%s start   %sq%s quit\033[K\n' \
+    "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
   [[ -n "$TUI_STATUS" ]] && printf '   %s%s%s\033[K\n' "$c_yel" "$TUI_STATUS" "$c_reset" || printf '\033[K\n'
   printf '\033[J'
 }
 
 tui_run() {
   local n=${#DEVICES[@]} i key short req="" all=1 any
-  TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0
+  TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0; REVERT_PATCHES="no"
   TUI_SEL=()
   for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done
   [[ -n "${VARIANT:-}" ]] && TUI_VARIANT="$VARIANT"
@@ -1412,6 +1481,12 @@ tui_run() {
       xgsi)   [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes" ;;
       gms)    TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]})) ;;
       edit)   tui_edit_lines ;;
+      revert)
+        any=0
+        for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
+        if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
+        REVERT_PATCHES="yes"
+        break ;;
       all)  for ((i = 0; i < n; i++)); do TUI_SEL[i]=1; done ;;
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
@@ -1462,6 +1537,12 @@ menu_ask() {
       say "  $((i + 1))) $short"
     done
     REQUESTED="$(ask "numbers, comma separated" "1,2,3,4,5")"
+  fi
+
+  say ""
+  if [[ "$(ask "revert the patches our trees apply, instead of building?" "n")" =~ ^[Yy] ]]; then
+    REVERT_PATCHES="yes"
+    return
   fi
 
   [[ "$(ask "upload to Buzzheavier?" "y")" =~ ^[Yy] ]] && DO_UPLOAD="yes" || DO_UPLOAD="no"
@@ -1520,6 +1601,7 @@ parse_args() {
       --keep-going)   KEEP_GOING="yes"; shift ;;
       --dry-run)      DRY_RUN="yes"; shift ;;
       --check-only)   CHECK_ONLY="yes"; shift ;;
+      --revert-patches) REVERT_PATCHES="yes"; shift ;;
       -h|--help)      usage; exit 0 ;;
       *) die "unknown option: $1 (try --help)" ;;
     esac
@@ -1599,17 +1681,25 @@ main() {
   rom_detect_gms
   rom_gms_menu
 
-  if [[ -z "$VARIANT" ]]; then
+  if [[ -z "$VARIANT" && "$REVERT_PATCHES" != "yes" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
     interactive_menu
   fi
-  case "$VARIANT" in
-    user|userdebug|eng) ;;
-    *) die "bad variant: $VARIANT (user|userdebug|eng)" ;;
-  esac
+  if [[ "$REVERT_PATCHES" != "yes" ]]; then
+    case "$VARIANT" in
+      user|userdebug|eng) ;;
+      *) die "bad variant: $VARIANT (user|userdebug|eng)" ;;
+    esac
+  fi
   [[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]] || { warn "--min-free/MIN_FREE_GB is not a number - using 40"; MIN_FREE_GB=40; }
 
   select_devices "$REQUESTED"
+
+  if [[ "$REVERT_PATCHES" == "yes" ]]; then
+    revert_selected_patches && info "done - tree patches reverted" \
+      || warn "some patches could not be reverted (see above)"
+    exit 0
+  fi
 
   # fold --gms/env into the fixed vanilla -> gapps -> microg build order.
   [[ ${#GMS_WANT[@]} -gt 0 ]] || GMS_WANT=("$GMS_MODES")

@@ -27,7 +27,7 @@ chmod +x build-all.sh
 # device / the upload switch / the xgsi switch / the gms row, left/right picks
 # the variant or the gms set, a/n select all/none devices, x toggles xgsi,
 # g cycles the gms set, e (or enter on the "make lines" row) edits the extra
-# make lines, enter starts, q quits.
+# make lines, r reverts our tree patches and stops, enter starts, q quits.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
 # terminal (or with stdin piped) it falls back to the plain numbered prompts.
 
@@ -88,6 +88,13 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 ./build-all.sh --check-only      # firmware + tree checks only, no build
 ./build-all.sh --dry-run         # print the plan, touch nothing
 ./build-all.sh --min-free 60     # refuse to start below 60G free
+
+# reverse-apply the patches our device trees drop into the source (X6532 ->
+# frameworks/base SystemUI, KL5 -> hardware/nxp/nfc), for the selected devices,
+# then stop.  Maintenance only: a later build re-applies them through
+# envsetup.sh unless you set PATCH_SHADE=0 (SystemUI) / leave PATCH_NFC unset.
+./build-all.sh --revert-patches                  # all devices
+./build-all.sh --revert-patches -d X6532,KL5n    # just these
 
 # LineageOS 23.x lunch wants a release config; the script reads it from
 # vendor/lineage/vars/aosp_target_release (e.g. bp4a) and you can override it:
