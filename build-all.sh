@@ -332,21 +332,30 @@ apply_rom() {
   DEVICES=("${out[@]}")
 }
 
-# the GMS menu options this ROM supports (vanilla is always present)
+# the GMS menu options this ROM supports: each pass on its own, then the combos
+# (vanilla is always offered).  A combo shows only for the passes the ROM ships.
 rom_gms_menu() {
-  MENU_GMS_OPTS=("vanilla only"); MENU_GMS_WANTS=(vanilla)
-  TUI_GMS_MODES=(vanilla); TUI_GMS_LABELS=(vanilla)
-  if [[ " $ROM_MODES " == *" gapps "* ]]; then
+  local has_gapps=0 has_microg=0
+  [[ " $ROM_MODES " == *" gapps "* ]] && has_gapps=1
+  [[ " $ROM_MODES " == *" microg "* ]] && has_microg=1
+
+  MENU_GMS_OPTS=(vanilla); MENU_GMS_WANTS=(vanilla)
+  TUI_GMS_MODES=(vanilla);  TUI_GMS_LABELS=(vanilla)
+  if (( has_gapps )); then
+    MENU_GMS_OPTS+=("gapps only");      MENU_GMS_WANTS+=("gapps")
+    TUI_GMS_MODES+=("gapps");           TUI_GMS_LABELS+=("gapps")
+  fi
+  if (( has_microg )); then
+    MENU_GMS_OPTS+=("microG only");     MENU_GMS_WANTS+=("microg")
+    TUI_GMS_MODES+=("microg");          TUI_GMS_LABELS+=("microg")
+  fi
+  if (( has_gapps )); then
     MENU_GMS_OPTS+=("vanilla + gapps"); MENU_GMS_WANTS+=("vanilla,gapps")
-    TUI_GMS_MODES+=("vanilla,gapps"); TUI_GMS_LABELS+=("vanilla+gapps")
+    TUI_GMS_MODES+=("vanilla,gapps");   TUI_GMS_LABELS+=("vanilla+gapps")
   fi
-  if [[ " $ROM_MODES " == *" microg "* ]]; then
-    MENU_GMS_OPTS+=("vanilla + microG"); MENU_GMS_WANTS+=("vanilla,microg")
-    TUI_GMS_MODES+=("vanilla,microg"); TUI_GMS_LABELS+=("vanilla+microg")
-  fi
-  if [[ " $ROM_MODES " == *" gapps "* && " $ROM_MODES " == *" microg "* ]]; then
+  if (( has_gapps && has_microg )); then
     MENU_GMS_OPTS+=("all 3 (vanilla + gapps + microG)"); MENU_GMS_WANTS+=(all)
-    TUI_GMS_MODES+=("vanilla,gapps,microg"); TUI_GMS_LABELS+=("all (3)")
+    TUI_GMS_MODES+=("vanilla,gapps,microg");             TUI_GMS_LABELS+=("all")
   fi
 }
 
@@ -416,11 +425,12 @@ Options:
                                      drop into the source (SystemUI, NFC HAL)
                                      for the selected devices, then stop
       --gms MODES                    GMS passes per device: vanilla (default),
-                                     vanilla,gapps, vanilla,microg, or all
-                                     (= vanilla,gapps,microg).  Built in that
-                                     fixed order; microG is always last.
-      --gapps                        shorthand for --gms vanilla,gapps
-      --microg                       shorthand for --gms vanilla,microg
+                                     gapps, microg (each builds only that pass),
+                                     vanilla+gapps, or all (= the three passes).
+                                     Built in the fixed order vanilla -> gapps ->
+                                     microg; microG is always last.
+      --gapps                        shorthand for --gms gapps
+      --microg                       shorthand for --gms microg
   -h, --help                         this text
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
@@ -438,15 +448,18 @@ a tree that already built.
 
 GMS modes: every selected device is built once per mode, in the fixed order
 vanilla -> gapps -> microg, limited to the modes the tree actually provides.
-LineageOS uses our device.mk gate: gapps bakes MindTheGapps (vendor/gapps) and
-microg bakes microG (vendor/partner_gms - LineageOS already ships microG-only
-signature spoofing, so no frameworks patch is needed).  Other ROMs are probed:
-if the tree ships a GApps and/or microG payload (and exposes a switch for it),
-that mode is offered and the ROM's own switch is used - nothing per-ROM is
-hardcoded.  gapps and microG are mutually exclusive.  The product out dir is
-cleared when the mode changes (a per-product .trang81-gms stamp tracks it).
-Artifacts land in out/tranG81-releases/<variant>/<mode>/ and non-vanilla zips
-get a -GAPPS/-MICROG suffix; boot images are collected on the vanilla pass only
+Each mode builds only its own pass, so "gapps" is a single GApps build and does
+not build vanilla first; pick "vanilla+gapps" or "all" to build several passes
+in one run (the menu's GMS row has the same choices).  LineageOS uses our
+device.mk gate: gapps bakes MindTheGapps (vendor/gapps) and microg bakes microG
+(vendor/partner_gms - LineageOS already ships microG-only signature spoofing, so
+no frameworks patch is needed).  Other ROMs are probed: if the tree ships a
+GApps and/or microG payload (and exposes a switch for it), that mode is offered
+and the ROM's own switch is used - nothing per-ROM is hardcoded.  gapps and
+microG are mutually exclusive.  The product out dir is cleared when the mode
+changes (a per-product .trang81-gms stamp tracks it).  Artifacts land in
+out/tranG81-releases/<variant>/<mode>/ and non-vanilla zips get a
+-GAPPS/-MICROG suffix; boot images are collected on the first pass of a run
 (identical across modes).  The menu has a GMS row (keys g / left / right).
 
 Telegram: create a bot with @BotFather for the token, message the bot, then get
@@ -479,17 +492,18 @@ json_str() {
 
 # ------------------------------------------------------------------- gms ----
 
-# fold a requested mode list (comma/space separated, repeated) into the fixed
-# build order vanilla -> gapps -> microg, de-duplicated.  "all" = the three
-# passes, "none"/"vanilla" = the vanilla pass only.  (gapps/microG build on top
-# of the LineageOS base, so vanilla is always kept.)  Sets GMS_MODE_LIST.
+# fold a requested mode list (comma/space/+ separated, repeated) into the fixed
+# build order vanilla -> gapps -> microg, de-duplicated.  Each pass stands alone
+# (vanilla is NOT forced: "gapps" builds only the GApps product); "all" = the
+# three passes, "vanilla+gapps" = that pair, "none"/"vanilla" = vanilla only.
+# Sets GMS_MODE_LIST.
 normalize_gms() {
   local t
   local -a src=() part=()
   local -A sel=()
   for t in "$@"; do
     part=()
-    IFS=', ' read -r -a part <<<"$t"
+    IFS=', +' read -r -a part <<<"$t"
     src+=("${part[@]+"${part[@]}"}")
   done
   for t in "${src[@]+"${src[@]}"}"; do
@@ -499,12 +513,9 @@ normalize_gms() {
       none|vanilla) sel[vanilla]=1 ;;
       gapps)        sel[gapps]=1 ;;
       microg)       sel[microg]=1 ;;
-      *)            die "bad --gms value '$t' (use vanilla|gapps|microg|all)" ;;
+      *)            die "bad --gms value '$t' (use vanilla|gapps|microg|vanilla+gapps|all)" ;;
     esac
   done
-  # gapps/microG are baked on top of the LineageOS base, so the vanilla pass is
-  # always kept (and always runs first).
-  sel[vanilla]=1
   GMS_MODE_LIST=()
   for t in vanilla gapps microg; do
     [[ -n "${sel[$t]:-}" ]] || continue
@@ -1279,10 +1290,11 @@ collect_artifacts() {
   COLLECTED+=("$dir/$dest")
 
   # boot.img / vendor_boot.img carry no system apps, so they are identical
-  # across GMS modes - collect them on the vanilla pass only, else the same file
-  # would be uploaded once per mode.  (Both products of a shared out dir write
-  # the same file name there, so tag every copy with the product.)
-  [[ "$GMS_MODE" == vanilla ]] || return 0
+  # across GMS modes - collect them on the first pass of the set only (that is
+  # the vanilla pass when it is selected), else the same file would be uploaded
+  # once per mode.  (Both products of a shared out dir write the same file name
+  # there, so tag every copy with the product.)
+  [[ "$GMS_MODE" == "${GMS_MODE_LIST[0]}" ]] || return 0
   for img in $EXTRA_IMAGES; do
     if [[ ! -f "$out/$img" ]]; then
       warn "$img not produced for $product - skipped"

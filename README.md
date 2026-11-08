@@ -43,11 +43,15 @@ WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 # GMS variants: every device is built once per mode, in the fixed order
 # vanilla -> gapps -> microg (microG last).  vanilla is stock LineageOS; gapps
 # bakes MindTheGapps (vendor/gapps); microg bakes microG (vendor/partner_gms,
-# LineageOS already ships microG-only signature spoofing).  gapps and microG
-# are mutually exclusive, and the vanilla pass is always kept.
-./build-all.sh -v user -u yes --gapps         # vanilla + gapps
-./build-all.sh -v user -u yes --microg        # vanilla + microG
-./build-all.sh -v user -u yes --gms all       # vanilla + gapps + microG
+# LineageOS already ships microG-only signature spoofing).  Each mode builds
+# only its own pass, so "gapps" alone does not build vanilla first - pick a
+# combo to build several in one run.  gapps and microG are mutually exclusive.
+./build-all.sh -v user -u yes --gms gapps          # gapps only
+./build-all.sh -v user -u yes --gms microg         # microG only
+./build-all.sh -v user -u yes --gms vanilla+gapps  # vanilla + gapps
+./build-all.sh -v user -u yes --gms all            # vanilla + gapps + microG
+# --gapps / --microg are shorthands for --gms gapps / --gms microg; the menu's
+# gms row offers the same set (vanilla / gapps / microg / vanilla+gapps / all).
 # gapps/microG are read from device.mk at product-config time, so the product
 # out dir is cleared whenever the mode changes (a per-product .trang81-gms
 # stamp tracks it) - no need to clean by hand.  GMS_MODES also works (comma
