@@ -159,6 +159,7 @@ rom_load() {
   # reset the per-ROM entry points so nothing leaks between profiles
   ROM_SETUP_CMD="lunch"; ROM_BUILD_CMD="mka"; ROM_BUILD_TYPE=""
   ROM_GMS_ARG_vanilla=""; ROM_GMS_ARG_gapps=""; ROM_GMS_ARG_microg=""
+  ROM_GMS_ENV_vanilla=""; ROM_GMS_ENV_gapps=""; ROM_GMS_ENV_microg=""
   ROM_RELEASE_FILE=""; ROM_RELEASE_CMD=""; ROM_PRODUCT_EXTRA=""
   case "$ROM" in
     lineage)
@@ -216,6 +217,11 @@ rom_load() {
       ROM_BUILD_TYPE="-b"                 # bacon -> the flashable zip
       ROM_GMS_ARG_vanilla="vanilla"
       ROM_GMS_ARG_gapps="gms"             # axion's full-GMS arg
+      # Axion has no microG flavor of its own, so a microG pass configures the
+      # vanilla variant and turns on the gate our device tree reads; unsupported
+      # upstream, so it may not build or boot.
+      ROM_GMS_ARG_microg="vanilla"
+      ROM_GMS_ENV_microg="WITH_MICROG=true"
       # Axion's common mk turns on package-existence enforcement, which its
       # README tells device trees to opt out of; inject it so our Lineage-based
       # tree does not have to carry an Axion-only line.
@@ -232,7 +238,6 @@ rom_load() {
 # switch name is taken from the ROM's own config so nothing is hardcoded.
 rom_detect_gms() {
   ROM_MODES=""; ROM_GMS_VARS=""
-  ROM_GMS_ENV_vanilla=""; ROM_GMS_ENV_gapps=""; ROM_GMS_ENV_microg=""
   ROM_HAVE_GAPPS="no"; ROM_HAVE_MICROG="no"
   ROM_GAPPS_TOGGLE=""; ROM_MICROG_TOGGLE=""
 
@@ -250,6 +255,12 @@ rom_detect_gms() {
     ROM_MODES="vanilla"
     [[ -n "$ROM_GMS_ARG_gapps" ]] && ROM_MODES+=" gapps"
     [[ -n "$ROM_GMS_ARG_microg" ]] && ROM_MODES+=" microg"
+    # remember every switch the profile exports so a pass that does not want one
+    # unsets it again (set_gms_env)
+    local e
+    for e in $(rom_gms_env vanilla) $(rom_gms_env gapps) $(rom_gms_env microg); do
+      [[ -n "$e" ]] && ROM_GMS_VARS="${ROM_GMS_VARS:+$ROM_GMS_VARS }${e%%=*}"
+    done
     return 0
   fi
 
@@ -275,6 +286,7 @@ rom_detect_gms() {
   fi
 
   ROM_MODES="vanilla"
+  ROM_GMS_ENV_vanilla=""; ROM_GMS_ENV_gapps=""; ROM_GMS_ENV_microg=""
   if [[ "$ROM_HAVE_GAPPS" == yes ]]; then
     ROM_MODES+=" gapps"
     [[ -n "$ROM_GAPPS_TOGGLE" ]] && ROM_GMS_ENV_gapps="$ROM_GAPPS_TOGGLE=true"
@@ -369,13 +381,15 @@ rom_gms_menu() {
 ROMS=(lineage evox yaap infinity axion)
 
 # everything the build needs from the active profile: the GMS passes the tree
-# offers, its menu, and the microG tree prep (device-owned ROMs only).
+# offers, its menu, and the microG tree prep.
 rom_prepare() {
-  if [[ "$ROM_GMS_OWNER" == "device" ]]; then
+  rom_detect_gms
+  # prep the microG tree whenever a microG pass is on offer (Lineage's device
+  # gate, or a ROM whose profile adds one); both steps no-op without the tree.
+  if [[ " $ROM_MODES " == *" microg "* ]]; then
     ensure_microg_namespace
     prune_microg_unshipped
   fi
-  rom_detect_gms
   rom_gms_menu
 }
 
