@@ -1242,7 +1242,7 @@ tui_cleanup() {
   [[ -n "$TUI_STTY" ]] && stty "$TUI_STTY" </dev/tty 2>/dev/null
   TUI_STTY=""
   printf '\033[?25h\033[0m'
-  trap - INT TERM
+  trap - INT TERM HUP
 }
 
 # one keypress -> a symbolic name (arrows are ESC [ A/B/C/D)
@@ -1384,7 +1384,7 @@ tui_run() {
 
   TUI_STTY="$(stty -g </dev/tty 2>/dev/null)"
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
-  trap 'tui_cleanup; exit 130' INT TERM
+  trap 'tui_cleanup; exit 130' INT TERM HUP
   printf '\033[2J\033[?25l'
   tui_render
 
@@ -1565,8 +1565,11 @@ select_devices() {
 
 on_interrupt() {
   local r="${ANDROID_ROOT:-}" a
-  trap - INT TERM
-  [[ -n "$INJECTED_MK" ]] && restore_product_lines "$INJECTED_MK"
+  trap - INT TERM HUP
+  if [[ -n "$INJECTED_MK" ]]; then
+    restore_product_lines "$INJECTED_MK"
+    say "   product makefile restored: ${INJECTED_MK#$r/}"
+  fi
   say ""
   warn "interrupted - stopping"
   if [[ ${#BUILT[@]} -gt 0 ]]; then
@@ -1647,7 +1650,7 @@ main() {
     check_disk || die "not enough free disk space - refusing to build"
   fi
 
-  trap on_interrupt INT TERM
+  trap on_interrupt INT TERM HUP
   RUN_START=$(date +%s)
 
   local entry product devtree vendortree device sysdev radiodir fp nfc log a name rzip
