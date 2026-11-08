@@ -53,6 +53,14 @@ MIN_FREE_GB="${MIN_FREE_GB:-40}"
 # (microG always last).  Comma list from vanilla|gapps|microg, or "all".
 GMS_MODES="${GMS_MODES:-vanilla}"
 
+# Extra make lines appended to the very bottom of the product makefile
+# (device/<devtree>/<product>.mk) just before lunch and taken off again after
+# the build, so the shared tree stays clean and ROM-neutral.  PRODUCT_EXTRA_LINES
+# applies to every device; PRODUCT_EXTRA_LINES_<device> (X6531, X6531B, X6532,
+# KL5, KL5n) overrides it for one.
+PRODUCT_EXTRA_LINES="${PRODUCT_EXTRA_LINES:-}"
+INJECTED_MK=""
+
 # custom-ROM profile (--rom); rom_load() fills these in and apply_rom() turns
 # the device keys above into full product names.  ROM_MODES / ROM_GMS_ENV_* are
 # filled by rom_detect_gms(): for LineageOS from our own device gate, for other
@@ -75,6 +83,7 @@ ROM_MICROG_TOGGLE=""
 ROM_RELEASE_FILE=""
 ROM_RELEASE_CMD=""
 ROM_LUNCH_STYLE=""
+ROM_PRODUCT_EXTRA=""
 
 # images collected and uploaded next to the ROM zip (tagged per product);
 # set EXTRA_IMAGES= to upload only the zip, add dtbo.img to include it.
@@ -185,6 +194,10 @@ rom_load() {
       ROM_GMS_OWNER="rom"
       ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
       ROM_LUNCH_STYLE="release"
+      # Axion's common mk turns on package-existence enforcement, which its
+      # README tells device trees to opt out of; inject it so our Lineage-based
+      # tree does not have to carry an Axion-only line.
+      ROM_PRODUCT_EXTRA="TARGET_DISABLE_EPPE := true"
       ;;
     *) die "unknown ROM '$ROM' (known: lineage evox yaap infinity axion)" ;;
   esac
@@ -352,6 +365,9 @@ Options:
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
      MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  GMS_MODES  MAKE_TARGET
+     PRODUCT_EXTRA_LINES (make lines appended to the product makefile for the
+     build, e.g. "AXION_PROCESSOR := MediaTek_Helio_G81"; PRODUCT_EXTRA_LINES_<device>
+     overrides it per device, e.g. PRODUCT_EXTRA_LINES_X6532)
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
 
@@ -1000,9 +1016,55 @@ resolve_release() {
   printf '%s' 'trunk_staging'
 }
 
+# ---- product-makefile line injection ----------------------------------------
+# A ROM profile (or the caller) can need a line at the bottom of the device's
+# product makefile that must not be committed, because the tree is shared by
+# every ROM.  We append it before lunch and put the file back afterwards; the
+# pristine copy is stashed next to it, so a run killed mid-build is repaired by
+# the next run and `repo sync`/`git status` stay clean.
+PRODUCT_LINES_MARK="# tranG81: appended for the build by build-all.sh (auto-removed)"
+
+# lines to append for a product: the ROM profile's own, then PRODUCT_EXTRA_LINES
+# (or the per-device PRODUCT_EXTRA_LINES_<device> if set, e.g. ..._X6532).
+product_extra_lines() {
+  local device="$1" v="PRODUCT_EXTRA_LINES_${1}" per=""
+  local -a l=()
+  if declare -p "$v" >/dev/null 2>&1; then per="${!v}"; fi
+  [[ -n "$ROM_PRODUCT_EXTRA" ]] && l+=("$ROM_PRODUCT_EXTRA")
+  if [[ -n "$per" ]]; then l+=("$per")
+  elif [[ -n "$PRODUCT_EXTRA_LINES" ]]; then l+=("$PRODUCT_EXTRA_LINES")
+  fi
+  [[ ${#l[@]} -gt 0 ]] && printf '%s\n' "${l[@]}" | sed '/^$/d'
+  return 0
+}
+
+# put the stashed pristine product makefile back (no-op when nothing was stolen).
+restore_product_lines() {
+  local mk="$1" orig
+  [[ -n "$mk" ]] || return 0
+  orig="$mk.tranG81.orig"
+  [[ -f "$orig" ]] && mv -f "$orig" "$mk"
+  INJECTED_MK=""
+  return 0
+}
+
+inject_product_lines() {
+  local mk="$1" lines="$2" orig
+  orig="$mk.tranG81.orig"
+  restore_product_lines "$mk"           # drop a block a previous run left behind
+  [[ -n "$lines" ]] || return 0
+  [[ -f "$mk" ]] || { warn "cannot inject product lines: ${mk#$ANDROID_ROOT/} missing"; return 1; }
+  cp "$mk" "$orig"
+  printf '\n%s\n%s\n' "$PRODUCT_LINES_MARK" "$lines" >>"$mk"
+  INJECTED_MK="$mk"
+  info "product lines injected into ${mk#$ANDROID_ROOT/}:"
+  printf '%s\n' "$lines" | sed 's/^/     /'
+}
+
 run_build() {
   local product="$1" variant="$2" nfc="$3" devtree="$4" log="$5"
-  local rc gmsenv=""
+  local rc gmsenv="" extra pmk=""
+  extra="$(product_extra_lines "${product#$ROM_PREFIX}")"
 
   [[ -n "$LUNCH_RELEASE" ]] || LUNCH_RELEASE="$(resolve_release "$product")"
 
@@ -1015,10 +1077,18 @@ run_build() {
     say "    source build/envsetup.sh   (PATCH_NFC=$([[ "$nfc" == 1 ]] && echo true || echo unset)${gmsenv:+ $gmsenv})"
     say "    lunch $(rom_lunch_args "$product" "$variant")"
     say "    mka ${MAKE_TARGET}${JOBS:+ -j$JOBS}"
+    if [[ -n "$extra" ]]; then
+      say "    + append to the bottom of $devtree/$product.mk (not committed):"
+      printf '%s\n' "$extra" | sed 's/^/        /'
+    fi
     return 0
   fi
 
   cd "$ANDROID_ROOT" || return 1
+
+  # the ROM reads these at product-config time; the tree is restored below.
+  pmk="$ANDROID_ROOT/$devtree/$product.mk"
+  inject_product_lines "$pmk" "$extra" || warn "continuing without the extra product lines"
 
   if [[ "$nfc" == "1" ]]; then
     export PATCH_NFC=true            # vendorsetup.sh applies hardware/nxp/nfc patches
@@ -1054,6 +1124,7 @@ run_build() {
     rc="${PIPESTATUS[0]}"
   fi
   set -u
+  restore_product_lines "$pmk"
   return "$rc"
 }
 
@@ -1449,6 +1520,7 @@ select_devices() {
 on_interrupt() {
   local r="${ANDROID_ROOT:-}" a
   trap - INT TERM
+  [[ -n "$INJECTED_MK" ]] && restore_product_lines "$INJECTED_MK"
   say ""
   warn "interrupted - stopping"
   if [[ ${#BUILT[@]} -gt 0 ]]; then

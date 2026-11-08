@@ -92,6 +92,16 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 # vendor/lineage/vars/aosp_target_release (e.g. bp4a) and you can override it:
 ./build-all.sh -v userdebug --release bp4a
 
+# custom ROM profile: --rom lineage (default), evox, yaap, infinity or axion
+./build-all.sh --rom axion -v user -u yes
+
+# some ROMs want extra make lines at the very bottom of
+# device/<tree>/lineage_<device>.mk; the script appends them for the build and
+# takes them off again, so the shared tree stays clean (axion already injects
+# TARGET_DISABLE_EPPE; add the AXION_* device-info lines this way):
+PRODUCT_EXTRA_LINES="AXION_PROCESSOR := MediaTek_Helio_G81" ./build-all.sh --rom axion -v user
+# per device: PRODUCT_EXTRA_LINES_X6532="AXION_CAMERA_REAR_INFO := 50,48"
+
 # all options
 ./build-all.sh --help
 
