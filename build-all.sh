@@ -9,9 +9,10 @@
 # vendor/partner_gms); other ROMs keep their own GApps/microG integration and
 # the script only flips their switch.
 #
-# Fixed order:  X6531 -> X6531B -> X6532 -> KL5 -> KL5n
-# KL5n is last on purpose: its vendorsetup.sh applies the hardware/nxp/nfc
-# patches when PATCH_NFC=true, so it must run after the clean builds.
+# Fixed order:  X6531 -> X6531B -> X6532 -> KL5 -> KL5n; each device builds all
+# its GMS modes before the next device starts.  KL5n is last on purpose: its
+# vendorsetup.sh applies the hardware/nxp/nfc patches when PATCH_NFC=true and
+# never reverts them, so it must run after every other device.
 #
 # Every selected device is built once per GMS mode, in the fixed order
 # vanilla -> gapps -> microg (microG always last): the mode selects a payload
@@ -406,9 +407,10 @@ usage() {
   cat <<'EOF'
 tranG81 - build + release every device, then upload each ROM to Buzzheavier.
 
-Fixed order:  X6531 -> X6531B -> X6532 -> KL5 -> KL5n
-KL5n is last on purpose: its vendorsetup.sh applies the hardware/nxp/nfc
-patches when PATCH_NFC=true, so it runs after the clean builds.
+Fixed order:  X6531 -> X6531B -> X6532 -> KL5 -> KL5n, all GMS modes of a
+device before the next.  KL5n is last on purpose: its vendorsetup.sh applies
+the hardware/nxp/nfc patches when PATCH_NFC=true and never reverts them, so it
+runs after every other device.
 
 Run it from the root of the ROM source tree (the dir holding build/envsetup.sh)
 or point ANDROID_ROOT at it.  The ROM is chosen with --rom (default lineage):
@@ -1913,21 +1915,21 @@ main() {
   local idx=0 total=${#SELECTED[@]} t0 dt status mode
   local -a pf
 
-  for mode in "${GMS_MODE_LIST[@]}"; do
-  GMS_MODE="$mode"
-  RELEASE_MODE_DIR="$RELEASE_ROOT/$VARIANT/$mode"
-  mkdir -p "$RELEASE_MODE_DIR"
-  say ""
-  info "########## GMS mode: $mode  (${#SELECTED[@]} device(s)) ##########"
-  idx=0
-
   for entry in "${SELECTED[@]}"; do
     idx=$((idx + 1))
     IFS='|' read -r product devtree vendortree device sysdev radiodir fp <<<"$entry"
     nfc=0; [[ "$product" == "${ROM_PREFIX}KL5n" ]] && nfc=1
 
+    # all GMS modes of one device run together, before the next device; KL5n
+    # patches the shared hardware/nxp/nfc HAL and never reverts it, so it must
+    # be the very last device to build.
+    for mode in "${GMS_MODE_LIST[@]}"; do
+    GMS_MODE="$mode"
+    RELEASE_MODE_DIR="$RELEASE_ROOT/$VARIANT/$mode"
+    mkdir -p "$RELEASE_MODE_DIR"
+
     say ""
-    info "=== $product  [$idx/$total]  (device=$device system=$sysdev) ==="
+    info "=== $product  [$idx/$total]  [$mode]  (device=$device system=$sysdev) ==="
 
     if ! verify_trees "$product" "$devtree" "$vendortree" "$device" "$radiodir"; then
       err "$product: firmware / tree check failed - refusing to build"

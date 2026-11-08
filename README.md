@@ -43,7 +43,8 @@ chmod +x build-all.sh
 WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 
 # GMS variants: every device is built once per mode, in the fixed order
-# vanilla -> gapps -> microg (microG last).  vanilla is stock LineageOS; gapps
+# vanilla -> gapps -> microg (microG last), all of a device's modes before the
+# next device.  vanilla is stock LineageOS; gapps
 # bakes MindTheGapps (vendor/gapps); microg bakes microG (vendor/partner_gms,
 # LineageOS already ships microG-only signature spoofing).  Each mode builds
 # only its own pass, so "gapps" alone does not build vanilla first - pick a
