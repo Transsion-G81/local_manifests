@@ -101,9 +101,12 @@ NO_BUILD="no"
 NOTIFY_URL=""
 ANDROID_ROOT="${ANDROID_ROOT:-}"
 
-# LineageOS 23.x lunch() needs <product>-<release>-<variant>; the release (e.g.
-# bp4a) is not optional.  Empty = auto-detect from the tree's pin file.
-LUNCH_RELEASE="${LUNCH_RELEASE:-${TARGET_RELEASE:-}}"
+# LineageOS 23.x lunch() needs <product> <release> <variant>; the release (e.g.
+# bp4a) is not optional.  Empty = auto-detect from the ROM's own release pin
+# file.  Only --release / LUNCH_RELEASE override it: never an ambient
+# TARGET_RELEASE, which a previous `lunch` in the same shell leaves exported
+# and which silently fed one ROM's release to the next ROM's lunch.
+LUNCH_RELEASE="${LUNCH_RELEASE:-}"
 
 RELEASE_ROOT=""
 LOG_DIR=""
@@ -172,12 +175,16 @@ rom_load() {
       ROM_LUNCH_STYLE="flat"
       ;;
     axion)
+      # AxionOS keeps the Lineage tree (its own vendor/lineage fork) and its
+      # device trees ship lineage_* products, so lunch and the release pin
+      # follow Lineage exactly - only the artifact name differs.
       ROM_NAME="AxionOS"
-      ROM_PREFIX="axion_"
+      ROM_PREFIX="lineage_"
       ROM_ZIP_GLOB="axion-*.zip"
-      ROM_VENDOR="vendor/axion"
+      ROM_VENDOR="vendor/lineage"
       ROM_GMS_OWNER="rom"
-      ROM_LUNCH_STYLE="flat"
+      ROM_RELEASE_FILE="vendor/lineage/vars/aosp_target_release"
+      ROM_LUNCH_STYLE="release"
       ;;
     *) die "unknown ROM '$ROM' (known: lineage evox yaap infinity axion)" ;;
   esac
@@ -344,7 +351,7 @@ Options:
   -h, --help                         this text
 
 Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_SIZE
-     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  GMS_MODES  MAKE_TARGET  TARGET_RELEASE
+     MIN_FREE_GB (default 40)  WITH_XGSI_LOGS  GMS_MODES  MAKE_TARGET
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
 
