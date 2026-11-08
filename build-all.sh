@@ -446,6 +446,12 @@ rom (the menu has a checkbox for it).  It is read from device.mk at
 product-config time, so clear out/target/product/<device> before toggling it on
 a tree that already built.
 
+The make lines are appended to the product makefile just before the build and
+removed again afterwards, so the tree stays clean; a line the tree already
+carries is not duplicated.  If a requested line cannot be placed (or the
+makefile is missing) the build stops instead of continuing with the wrong
+config.
+
 GMS modes: every selected device is built once per mode, in the fixed order
 vanilla -> gapps -> microg, limited to the modes the tree actually provides.
 Each mode builds only its own pass, so "gapps" is a single GApps build and does
@@ -1181,17 +1187,39 @@ restore_product_lines() {
   return 0
 }
 
+# every requested line must actually be present in the product makefile.
+verify_product_lines() {
+  local mk="$1" line
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    grep -qxF -- "$line" "$mk" || { err "product line did not land in ${mk#$ANDROID_ROOT/}: $line"; return 1; }
+  done <<<"$2"
+  return 0
+}
+
 inject_product_lines() {
-  local mk="$1" lines="$2" orig
+  local mk="$1" lines="$2" orig="" miss="" line
   orig="$mk.tranG81.orig"
   restore_product_lines "$mk"           # drop a block a previous run left behind
   [[ -n "$lines" ]] || return 0
-  [[ -f "$mk" ]] || { warn "cannot inject product lines: ${mk#$ANDROID_ROOT/} missing"; return 1; }
-  cp "$mk" "$orig"
-  printf '\n%s\n%s\n' "$PRODUCT_LINES_MARK" "$lines" >>"$mk"
-  INJECTED_MK="$mk"
-  info "product lines injected into ${mk#$ANDROID_ROOT/}:"
-  printf '%s\n' "$lines" | sed 's/^/     /'
+  [[ -f "$mk" ]] || { err "cannot inject product lines: ${mk#$ANDROID_ROOT/} missing"; return 1; }
+  # a line the tree already carries is left alone; only the missing ones are added
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    grep -qxF -- "$line" "$mk" || miss+="${miss:+$'\n'}$line"
+  done <<<"$lines"
+  if [[ -n "$miss" ]]; then
+    cp "$mk" "$orig"
+    printf '\n%s\n%s\n' "$PRODUCT_LINES_MARK" "$miss" >>"$mk"
+    INJECTED_MK="$mk"
+    info "product lines injected into ${mk#$ANDROID_ROOT/}:"
+    printf '%s\n' "$miss" | sed 's/^/     /'
+  else
+    info "product lines already present in ${mk#$ANDROID_ROOT/} - tree left as-is"
+  fi
+  # the ROM reads these at product-config time: fail rather than build with a
+  # config the tree never actually received
+  verify_product_lines "$mk" "$lines"
 }
 
 run_build() {
@@ -1221,8 +1249,13 @@ run_build() {
   cd "$ANDROID_ROOT" || return 1
 
   # the ROM reads these at product-config time; the tree is restored below.
+  # inject_product_lines verifies the lines really landed, so a tree that cannot
+  # carry them is not built with a silently wrong config.
   pmk="$ANDROID_ROOT/$devtree/$product.mk"
-  inject_product_lines "$pmk" "$extra" || warn "continuing without the extra product lines"
+  if ! inject_product_lines "$pmk" "$extra"; then
+    restore_product_lines "$pmk"
+    return 1
+  fi
 
   if [[ "$nfc" == "1" ]]; then
     export PATCH_NFC=true            # vendorsetup.sh applies hardware/nxp/nfc patches

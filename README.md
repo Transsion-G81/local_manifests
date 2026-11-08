@@ -114,7 +114,8 @@ EXTRA_IMAGES="boot.img vendor_boot.img dtbo.img" ./build-all.sh -v userdebug -u 
 # device/<tree>/lineage_<device>.mk; the script appends them for the build and
 # takes them off again, so the shared tree stays clean (axion already injects
 # TARGET_DISABLE_EPPE; add the AXION_* device-info lines this way, or through
-# the TUI's "make lines" row):
+# the TUI's "make lines" row).  A line the tree already carries is not
+# duplicated, and the build stops if a line cannot be placed:
 PRODUCT_EXTRA_LINES="AXION_PROCESSOR := MediaTek_Helio_G81" ./build-all.sh --rom axion -v user
 # per device: PRODUCT_EXTRA_LINES_X6532="AXION_CAMERA_REAR_INFO := 50,48"
 
