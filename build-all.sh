@@ -166,7 +166,7 @@ ANDROID_ROOT="${ANDROID_ROOT:-}"
 # and which silently fed one ROM's release to the next ROM's lunch.
 LUNCH_RELEASE="${LUNCH_RELEASE:-}"
 
-RELEASE_ROOT=""
+RELEASE_ROOT="${RELEASE_ROOT:-}"
 LOG_DIR=""
 declare -a BUILT=() FAILED=() LINKS=() SELECTED=() COLLECTED=()
 declare -a TIMING=() DIRTY=() REL_JSON=() LINK_BLOCKS=()
@@ -518,8 +518,8 @@ Release mirrors (-u stays Buzzheavier):
   route answer only a Chrome TLS fingerprint, which curl cannot fake, so its
   links are resolved through curl_cffi (installed once into BUZZ_PY_LIB if the
   system python lacks it); the signed CDN link it returns is then fetched with
-  curl, retried and resumed on a break.  Files are grouped per codename and
-  published, then it exits.  The
+  aria2 (8 connections, when installed) or curl, both resuming a big file on a
+  break.  Files are grouped per codename and published, then it exits.  The
   TUI's "no build - links" row and the plain menu collect the same links.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
@@ -600,6 +600,7 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      file it would otherwise download - e.g. where your build outputs live)
      BUZZ_PY_LIB (where --mirror installs the buzzheavier resolver; default
      $HOME/.local/share/build-all/pylibs)
+     DL_TOOL (auto|aria2c|curl; auto uses aria2 when it is installed, else curl)
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
@@ -2471,8 +2472,12 @@ index_artifacts() {
 # host).  A file still sitting in the release dir is reused; otherwise it is
 # fetched.  The codename comes from the file name, or is forced with --codename.
 mirror_links() {
-  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src code derr cur="" rc=0
+  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src code derr="" rc_dl=0 cur="" rc=0
   local -a ents=()
+  # a slow link moves fastest with many connections per file: use aria2 when it
+  # is installed, else curl (one connection; both resume).  DL_TOOL pins it.
+  local tool="${DL_TOOL:-auto}"
+  if [[ "$tool" == "auto" ]]; then have aria2c && tool=aria2c || tool=curl; fi
   [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
     || die "--mirror needs a destination: add --gh and/or --sf"
   mkdir -p "$dir" || return 1
@@ -2504,13 +2509,25 @@ mirror_links() {
         ok "reuse collected $name"
       else
         dl="$(bh_direct "$u")"
-        info "fetching $u -> $name (codename $tag)"
-        # -C - resumes a big transfer instead of restarting it, and
-        # --retry-all-errors retries more than just a 5xx; curl's own reason is
-        # kept so a dead link can be told apart from a full disk or a timeout.
-        derr="$(mktemp)"
-        code="$(curl -fsSL -C - --retry 5 --retry-delay 3 --retry-all-errors -o "$path" -w '%{http_code}' "$dl" 2>"$derr")" || {
-          tail -n 3 "$derr" 2>/dev/null | sed 's/^/    /' >&2; rm -f "$derr"
+        if [[ "$tool" == "aria2c" ]]; then
+          info "fetching $u -> $name (codename $tag, 8 connections)"
+          # -x8 -s8 splits the file over 8 connections; -c resumes, so a break
+          # keeps what has come down.  aria2 prints its own progress and errors.
+          aria2c -x8 -s8 -k1M -c -j1 --auto-file-renaming=false --allow-overwrite=true \
+                 --file-allocation=none --max-tries=5 --retry-wait=3 --summary-interval=15 \
+                 -d "$(dirname "$path")" -o "$(basename "$path")" "$dl"
+          rc_dl=$?
+        else
+          info "fetching $u -> $name (codename $tag)"
+          # -C - resumes a big transfer instead of restarting it, and
+          # --retry-all-errors retries more than just a 5xx; curl's own reason is
+          # kept so a dead link can be told apart from a full disk or a timeout.
+          derr="$(mktemp)"
+          code="$(curl -fsSL -C - --retry 5 --retry-delay 3 --retry-all-errors -o "$path" -w '%{http_code}' "$dl" 2>"$derr")"
+          rc_dl=$?
+        fi
+        if (( rc_dl != 0 )); then
+          [[ -z "$derr" ]] || { tail -n 3 "$derr" 2>/dev/null | sed 's/^/    /' >&2; rm -f "$derr"; }
           err "download failed: $u${code:+ (HTTP $code)}"
           # buzzheavier hides its file behind Cloudflare, so a failure here is
           # either the curl_cffi resolve or the byte transfer; name the one it was.
@@ -2522,8 +2539,8 @@ mirror_links() {
             fi
           fi
           rc=1; continue
-        }
-        rm -f "$derr"
+        fi
+        [[ -z "$derr" ]] || rm -f "$derr"
       fi
     fi
     ents+=("$tag|$name|$path")
@@ -2542,7 +2559,10 @@ mirror_links() {
 # publish the queued release links (--mirror or the menu "no build - links" row)
 # and exit; skips the build entirely.
 run_mirror_mode() {
-  RELEASE_ROOT="$ANDROID_ROOT/out/tranG81-releases"
+  # a link-only run needs no tree: the tree's release dir when there is one, an
+  # explicit RELEASE_ROOT, else a home dir (so it works on a plain machine).
+  RELEASE_ROOT="${RELEASE_ROOT:-${ANDROID_ROOT:+$ANDROID_ROOT/out/tranG81-releases}}"
+  RELEASE_ROOT="${RELEASE_ROOT:-$HOME/tranG81-releases}"
   if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
     warn "release links given but no mirror is on - enable github and/or sourceforge"
     exit 1
@@ -2577,11 +2597,11 @@ main() {
     warn "sourceforge: ssh/rsync/sftp not found - SourceForge skipped"
     DO_SF="no"
   fi
+  # a link-only run needs no AOSP tree, so publish before looking for one
+  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then run_mirror_mode; fi
   find_root
   # what GApps/microG the tree actually provides, then the matching menu
   rom_prepare
-
-  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then run_mirror_mode; fi
 
   if [[ -z "$VARIANT" && "$REVERT_PATCHES" != "yes" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
