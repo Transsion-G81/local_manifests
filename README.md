@@ -93,7 +93,9 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # --gh -> one release per codename (tag and name = X6531/X6531B/X6532/KL5/KL5n)
 #        in GH_RELEASE_REPO (default Transsion-G81/release).  The rom zip and
 #        the tagged boot/vendor_boot images are replaced on every run, so a
-#        rebuild across ROMs/GMS modes lands in the same release.  gh
+#        rebuild across ROMs/GMS modes lands in the same release; the boot
+#        image name carries the ROM (boot-<codename>-<rom>.img) so two ROMs
+#        sharing a codename do not overwrite each other.  gh
 #        authenticates itself (GH_TOKEN/GITHUB_TOKEN or `gh auth login`); with
 #        no gh CLI, or a login that cannot write the repo (a 404 on an org repo
 #        usually means no access, not a wrong name), github is skipped with a

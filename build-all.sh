@@ -495,9 +495,11 @@ releases) and ssh + sftp + rsync (SourceForge).  chmod +x this file first.
 
 Release mirrors (-u stays Buzzheavier):
   --gh publishes each codename to one GitHub release (tag and name = the
-  codename, e.g. X6532; its assets - rom zip, boot-<dev>.img,
-  vendor_boot-<dev>.img and EXTRA_IMAGES - are replaced on every run, so a
-  rebuild across ROMs/GMS modes lands in the same release).  gh authenticates
+  codename, e.g. X6532; its assets - rom zip, boot-<dev>-<rom>.img,
+  vendor_boot-<dev>-<rom>.img and EXTRA_IMAGES - are replaced on every run, so a
+  rebuild across ROMs/GMS modes lands in the same release (the ROM in the boot
+  image name keeps two ROMs sharing a codename from overwriting each other).
+  gh authenticates
   itself from GH_TOKEN / GITHUB_TOKEN or a stored login; with no gh, GitHub is
   skipped with a warning.
   --sf rsyncs the same files over your SSH key to
@@ -1063,7 +1065,7 @@ bh_upload() {
 # one SourceForge subfolder; files are replaced, never versioned.
 
 # the codename a bare file name belongs to; the longest DEVICES key wins, so
-# boot-X6531B.img is X6531B and not X6531.
+# boot-X6531B-lineage.img is X6531B and not X6531.
 codename_of() {
   local name="$1" e key best=""
   for e in "${DEVICES[@]}"; do
@@ -1656,15 +1658,16 @@ collect_artifacts() {
   # boot.img / vendor_boot.img carry no system apps, so they are identical
   # across GMS modes - collect them on the first pass of the set only (that is
   # the vanilla pass when it is selected), else the same file would be uploaded
-  # once per mode.  (Both products of a shared out dir write the same file name
-  # there, so tag every copy with the product.)
+  # once per mode.  The name carries both the codename and the ROM because each
+  # codename owns one release/folder shared by every ROM, and a second ROM's
+  # boot.img would otherwise clobber the first one's.
   [[ "$GMS_MODE" == "${GMS_MODE_LIST[0]}" ]] || return 0
   for img in $EXTRA_IMAGES; do
     if [[ ! -f "$out/$img" ]]; then
       warn "$img not produced for $product - skipped"
       continue
     fi
-    name="${img%.img}-${tag}.img"
+    name="${img%.img}-${tag}-${ROM}.img"
     cp -f "$out/$img" "$dir/$name" || return 1
     COLLECTED+=("$dir/$name")
   done
@@ -1685,7 +1688,7 @@ collect_existing() {
     [[ "$(basename "$f")" =~ (^|[-_])"$tag"([-_.]|$) ]] && COLLECTED+=("$f")
   done
   for f in $EXTRA_IMAGES; do
-    f="$dir/${f%.img}-${tag}.img"
+    f="$dir/${f%.img}-${tag}-${ROM}.img"
     [[ -f "$f" ]] && COLLECTED+=("$f")
   done
   if [[ ${#COLLECTED[@]} -eq 0 ]]; then
