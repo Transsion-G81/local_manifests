@@ -518,7 +518,8 @@ Release mirrors (-u stays Buzzheavier):
   route answer only a Chrome TLS fingerprint, which curl cannot fake, so its
   links are resolved through curl_cffi (installed once into BUZZ_PY_LIB if the
   system python lacks it); the signed CDN link it returns is then fetched with
-  curl.  Files are grouped per codename and published, then it exits.  The
+  curl, retried and resumed on a break.  Files are grouped per codename and
+  published, then it exits.  The
   TUI's "no build - links" row and the plain menu collect the same links.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
@@ -2392,17 +2393,20 @@ i = sys.argv[1]
 base = "https://buzzheavier.com/" + i
 h = {"HX-Request": "true", "Referer": "https://buzzheavier.com/f/" + i}
 s = requests.Session(impersonate="chrome")
-for _ in range(3):
-    m = re.search(r"/" + re.escape(i) + r"/download\?t=[^\"&']+", s.get(base, headers=h, timeout=30).text)
-    if m:
-        break
-    time.sleep(2)
-else:
-    sys.exit(3)
-r = s.get("https://buzzheavier.com" + m.group(0), headers=h, timeout=30, allow_redirects=False)
-d = r.headers.get("Hx-Redirect") or r.headers.get("Location")
-if d:
-    print(d)
+# cloudflare rate-limits bursts, so one miss is not fatal: retry with backoff.
+# no output means "not resolved"; bh_direct then falls back to the plain link.
+for n in range(5):
+    try:
+        m = re.search(r"/" + re.escape(i) + r"/download\?t=[^\"&']+", s.get(base, headers=h, timeout=30).text)
+        if m:
+            r = s.get("https://buzzheavier.com" + m.group(0), headers=h, timeout=30, allow_redirects=False)
+            d = r.headers.get("Hx-Redirect") or r.headers.get("Location")
+            if d:
+                print(d)
+                break
+    except Exception:
+        pass
+    time.sleep(2 + n)
 PY
 }
 
@@ -2467,7 +2471,7 @@ index_artifacts() {
 # host).  A file still sitting in the release dir is reused; otherwise it is
 # fetched.  The codename comes from the file name, or is forced with --codename.
 mirror_links() {
-  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src code cur="" rc=0
+  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src code derr cur="" rc=0
   local -a ents=()
   [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
     || die "--mirror needs a destination: add --gh and/or --sf"
@@ -2501,19 +2505,25 @@ mirror_links() {
       else
         dl="$(bh_direct "$u")"
         info "fetching $u -> $name (codename $tag)"
-        code="$(curl -fsSL --retry 3 --retry-delay 2 -o "$path" -w '%{http_code}' "$dl" 2>/dev/null)" || {
+        # -C - resumes a big transfer instead of restarting it, and
+        # --retry-all-errors retries more than just a 5xx; curl's own reason is
+        # kept so a dead link can be told apart from a full disk or a timeout.
+        derr="$(mktemp)"
+        code="$(curl -fsSL -C - --retry 5 --retry-delay 3 --retry-all-errors -o "$path" -w '%{http_code}' "$dl" 2>"$derr")" || {
+          tail -n 3 "$derr" 2>/dev/null | sed 's/^/    /' >&2; rm -f "$derr"
           err "download failed: $u${code:+ (HTTP $code)}"
-          # buzzheavier hides its download behind Cloudflare and only the
-          # curl_cffi resolver passes it; say which of the two cases this is.
+          # buzzheavier hides its file behind Cloudflare, so a failure here is
+          # either the curl_cffi resolve or the byte transfer; name the one it was.
           if [[ "$u" == *buzzheavier.com/* || "$u" == *bzzhr.* ]]; then
-            if python3 -c 'import curl_cffi' 2>/dev/null || [[ -d "$BUZZ_PY_LIB/curl_cffi" ]]; then
-              warn "buzzheavier: could not resolve $name - the link may have expired; keep it on disk (release dir / build output) or set BUILD_ALL_ARTIFACTS"
+            if [[ "$dl" == "$u" ]]; then
+              warn "buzzheavier: could not resolve $name - the resolver is missing or the link expired; keep it on disk (release dir / build output) or set BUILD_ALL_ARTIFACTS"
             else
-              warn "buzzheavier: its resolver is missing - install it with 'pip3 install --user --break-system-packages curl_cffi'; or keep $name on disk / set BUILD_ALL_ARTIFACTS"
+              warn "buzzheavier: the resolved link did not deliver $name - retry (it resumes), or keep it on disk / set BUILD_ALL_ARTIFACTS"
             fi
           fi
           rc=1; continue
         }
+        rm -f "$derr"
       fi
     fi
     ents+=("$tag|$name|$path")

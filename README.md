@@ -132,7 +132,8 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # route answer only a Chrome TLS fingerprint; the resolver is installed once
 # into BUZZ_PY_LIB (default ~/.local/share/build-all/pylibs) if the system
 # python lacks it, then the signed CDN link it returns is fetched with plain
-# curl.  same as the TUI "no build - links" row.
+# curl, retrying and resuming (-C -) a big file rather than restarting it.
+# same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 # ...or point the reuse search at the dir holding your build outputs
 BUILD_ALL_ARTIFACTS="/srv/builds/tranG81-releases" ./build-all.sh --mirror <block pasted> --gh --sf
