@@ -124,7 +124,9 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # download-links block and each URL takes the file name of the label line above
 # it (a bare URL list falls back to the name in the link); the codename is read
 # from the file name (override with --codename NAME) and the files are grouped
-# per codename.  a file still in the release dir is reused, else downloaded.
+# per codename.  a file still in the release dir is reused, else downloaded -
+# but Buzzheavier downloads sit behind a Cloudflare Turnstile no CLI can pass,
+# so keep the artifacts (or browser-download them into the release dir).
 # same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 

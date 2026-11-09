@@ -509,11 +509,12 @@ Release mirrors (-u stays Buzzheavier):
   upload) to the enabled mirrors.  Paste a whole download-links block and each
   URL takes the file name of the label line above it, so the codename is known;
   a bare URL list falls back to the name in the link.  A file still sitting in
-  the release dir is reused (no re-download), otherwise it is fetched - the
-  Buzzheavier /download endpoint is used, whose Hx-Redirect header points at the
-  real CDN URL (the page itself is behind a JS challenge).  Files are grouped per
-  codename and published, then it exits.  The TUI's "no build - links" row and
-  the plain menu collect the same links.
+  the release dir is reused (no re-download), otherwise it is fetched.  Note:
+  Buzzheavier serves downloads behind a Cloudflare Turnstile that no CLI client
+  can pass, so its links can only be published when the file is still in the
+  release dir - keep the artifacts, or download them in a browser and drop them
+  in there.  Files are grouped per codename and published, then it exits.  The
+  TUI's "no build - links" row and the plain menu collect the same links.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
 
@@ -2402,8 +2403,15 @@ mirror_links() {
       else
         dl="$(bh_direct "$u")"
         info "fetching $u -> $name (codename $tag)"
-        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$path" "$dl" \
-          || { err "download failed: $u"; rc=1; continue; }
+        if ! curl -fsSL --retry 3 --retry-delay 2 -o "$path" "$dl"; then
+          err "download failed: $u"
+          # buzzheavier's download page sits behind a Cloudflare Turnstile, so
+          # no CLI fetch can pass it (only a real browser can).  the file must
+          # be there from the build - this is the fallback that tells you so.
+          [[ "$u" == *buzzheavier.com/* || "$u" == *bzzhr.* ]] \
+            && warn "buzzheavier blocks automated downloads; keep $name in $RELEASE_ROOT (from the build) instead"
+          rc=1; continue
+        fi
       fi
     fi
     ents+=("$tag|$name|$path")
