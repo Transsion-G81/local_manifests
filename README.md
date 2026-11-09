@@ -30,7 +30,8 @@ chmod +x build-all.sh
 # extra make lines, r reverts our tree patches and stops, enter starts, q quits.
 # the "github release" / "sourceforge" rows toggle those mirrors and the
 # "sf folder" row (space/enter) opens the SourceForge folder picker; the
-# "no build" row re-uploads already-collected artifacts instead of building.
+# "no build - links" row opens a paste box (one release link per line) and
+# publishes them to the enabled mirrors, grouped per codename, no build.
 # the "rom" row reloads the picked profile's devices and gms menu, so every
 # profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
@@ -119,7 +120,8 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 ./build-all.sh -v user --gh --sf --sf-project naze-release --sf-folder releases --gh-repo Transsion-G81/releases
 
 # no build: publish files straight from a past Buzzheavier (or any) link; the
-# codename is read from each file's own name (override with --codename NAME)
+# codename is read from each file's own name (override with --codename NAME) and
+# the links are grouped per codename.  same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 
 # bigger/faster: ccache, explicit jobs, extra image (dtbo)

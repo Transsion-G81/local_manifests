@@ -467,8 +467,9 @@ makefile (bottom of the file, for the build only - see PRODUCT_EXTRA_LINES
 below); the "r" key reverse-applies the patches our device trees drop into the
 source and stops (same as --revert-patches).  The "github release" and
 "sourceforge" rows toggle those mirrors, the "sf folder" row picks the
-SourceForge folder, and the "no build" row re-uploads already-collected
-artifacts (same as --no-build).
+SourceForge folder, and the "no build - links" row opens a paste box: one
+release link per line, published to the enabled mirrors grouped per codename
+(same as --mirror).
 
 Every ROM is configured and built through its own entry points, taken from its
 profile: lineage, evox, yaap and infinity use lunch + mka, AxionOS uses its own
@@ -504,8 +505,11 @@ Release mirrors (-u stays Buzzheavier):
   chosen per run from the project's folders or created new; ssh runs in
   BatchMode, so a missing key fails fast.
   --mirror skips the build: it downloads the given links (e.g. a past Buzzheavier
-  upload), works out each file's codename from its name (--codename overrides)
-  and publishes them to the enabled mirrors, then exits.
+  upload), works out each file's codename from its name (--codename overrides),
+  groups them per codename and publishes them to the enabled mirrors, then exits.
+  The TUI's "no build - links" row and the plain menu collect the same links.
+  --no-build is different: it re-uploads the artifacts already collected in the
+  release dir, with no download.
 
 Options:
       --rom NAME                     ROM profile: lineage, evox (Evolution X),
@@ -1773,7 +1777,7 @@ TUI_VARIANT="user"
 TUI_UPLOAD="yes"
 TUI_GH="no"
 TUI_SF="no"
-TUI_NOBUILD="no"
+TUI_LINKS=""
 TUI_XGSI="no"
 TUI_GMS=0
 TUI_STATUS=""
@@ -1875,6 +1879,34 @@ tui_edit_lines() {
   printf '\033[2J\033[?25l'
 }
 
+# Edit the release links published instead of building (one URL per line).  Same
+# cooked-mode trick as tui_edit_lines; the links are grouped per codename later.
+tui_edit_links() {
+  local l out="" typed=0
+  stty "$TUI_STTY" </dev/tty 2>/dev/null
+  printf '\033[?25h\033[2J\033[H'
+  printf '  %srelease links%s - skip the build and publish these links instead\n' "$c_cyn" "$c_reset"
+  printf '  each link is fetched and sent to the enabled mirrors (github /\n'
+  printf '  sourceforge), grouped per codename found in the file name.\n\n'
+  if [[ -n "$TUI_LINKS" ]]; then
+    printf '  current:\n'; printf '%s\n' "$TUI_LINKS" | sed 's/^/    /'
+  else
+    printf '  current: (none)\n'
+  fi
+  printf '\n  type one link per line, blank line to finish, "-" to clear.\n'
+  printf '  e.g.  https://buzzheavier.com/abc123\n'
+  printf '        https://buzzheavier.com/def456\n\n'
+  while IFS= read -r l </dev/tty; do
+    [[ -z "$l" ]] && break
+    typed=1
+    [[ "$l" == "-" ]] && { out=""; break; }
+    out+="${out:+$'\n'}$l"
+  done
+  (( typed )) && TUI_LINKS="$out"
+  stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+  printf '\033[2J\033[?25l'
+}
+
 # pick the SourceForge folder from the TUI: drop to cooked mode, reuse the plain
 # picker, then restore raw mode before redrawing.
 tui_sf_folder() {
@@ -1955,8 +1987,9 @@ tui_render() {
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 9)))"
-  [[ "$TUI_NOBUILD" == "yes" ]] && row+="[x] " || row+="[ ] "
-  (( TUI_FOCUS == n + 9 )) && row+="${c_bold}no build (upload what is already collected)${c_reset}" || row+="no build (upload what is already collected)"
+  if [[ -n "$TUI_LINKS" ]]; then lab="${TUI_LINKS//$'\n'/; }"; (( ${#lab} > 44 )) && lab="${lab:0:41}..."
+  else lab="(none)"; fi
+  (( TUI_FOCUS == n + 9 )) && row+="${c_bold}no build - links: $lab${c_reset}" || row+="no build - links: $lab"
   printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
@@ -1972,7 +2005,7 @@ tui_run() {
   local n=${#DEVICES[@]} i key short req="" all=1 any
   TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0; REVERT_PATCHES="no"
   TUI_GH="$DO_GH"; TUI_SF="$DO_SF"
-  [[ "$NO_BUILD" == "yes" ]] && TUI_NOBUILD="yes" || TUI_NOBUILD="no"
+  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then printf -v TUI_LINKS '%s\n' "${MIRROR_URLS[@]}"; TUI_LINKS="${TUI_LINKS%$'\n'}"; else TUI_LINKS=""; fi
   TUI_ROM=0
   for i in "${!ROMS[@]}"; do [[ "${ROMS[$i]}" == "$ROM" ]] && TUI_ROM=$i; done
   TUI_SEL=()
@@ -2010,7 +2043,7 @@ tui_run() {
         elif (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"
         elif (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"
         elif (( TUI_FOCUS == n + 8 )); then tui_sf_folder
-        elif (( TUI_FOCUS == n + 9 )); then [[ "$TUI_NOBUILD" == yes ]] && TUI_NOBUILD="no" || TUI_NOBUILD="yes"
+        elif (( TUI_FOCUS == n + 9 )); then tui_edit_links
         else TUI_SEL[TUI_FOCUS - 2]=$((1 - TUI_SEL[TUI_FOCUS - 2]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
@@ -2030,7 +2063,7 @@ tui_run() {
         if (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"; tui_render; continue; fi
         if (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"; tui_render; continue; fi
         if (( TUI_FOCUS == n + 8 )); then tui_sf_folder; tui_render; continue; fi
-        if (( TUI_FOCUS == n + 9 )); then [[ "$TUI_NOBUILD" == yes ]] && TUI_NOBUILD="no" || TUI_NOBUILD="yes"; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 9 )); then tui_edit_links; tui_render; continue; fi
         any=0
         for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
         if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
@@ -2051,7 +2084,11 @@ tui_run() {
   DO_UPLOAD="$TUI_UPLOAD"
   DO_GH="$TUI_GH"
   DO_SF="$TUI_SF"
-  [[ "$TUI_NOBUILD" == "yes" ]] && NO_BUILD="yes" || NO_BUILD="no"
+  if [[ -n "$TUI_LINKS" ]]; then
+    MIRROR_URLS=()
+    local _u
+    while IFS= read -r _u; do [[ -n "$_u" ]] && MIRROR_URLS+=("$_u"); done <<<"$TUI_LINKS"
+  fi
   [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
   GMS_WANT=("${TUI_GMS_MODES[$TUI_GMS]}")
   PRODUCT_EXTRA_LINES="$TUI_LINES"
@@ -2119,7 +2156,16 @@ menu_ask() {
   PRODUCT_EXTRA_LINES="$(ask "make lines to append to the product makefile (blank = keep)" "$PRODUCT_EXTRA_LINES")"
 
   local nbd="n"; [[ "$NO_BUILD" == "yes" ]] && nbd="y"
-  [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
+  say ""
+  info "release links (one per line, blank to finish) - publish these instead of building"
+  local _l
+  while IFS= read -r _l </dev/tty; do
+    [[ -z "$_l" ]] && break
+    MIRROR_URLS+=("$_l")
+  done
+  if [[ ${#MIRROR_URLS[@]} -eq 0 ]]; then
+    [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
+  fi
 }
 
 interactive_menu() {
@@ -2247,33 +2293,64 @@ on_interrupt() {
 # the file's own name (boot/vendor_boot/zip keep their tag), or forced with
 # --codename NAME.
 mirror_links() {
-  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" u name tag rc=0
+  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" u name tag path cur="" rc=0
+  local -a ents=()
   [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
     || die "--mirror needs a destination: add --gh and/or --sf"
   mkdir -p "$dir" || return 1
+  # 1) resolve each link to a file name + codename and fetch it locally
   for u in "${MIRROR_URLS[@]}"; do
     [[ -n "$u" ]] || continue
-    if [[ "$DRY_RUN" == "yes" ]]; then
-      name="$(basename "${u%%\?*}")"
-      tag="$MIRROR_CODENAME"; [[ -n "$tag" ]] || tag="$(codename_of "$name")"
-      say "    curl -fL -o $dir/$name $u   (codename ${tag:-?})"
-      publish_file "$dir/$name" "$name" "$tag" "tranG81 mirror $name" || rc=1
-      continue
+    name=""
+    if [[ "$DRY_RUN" != "yes" ]]; then
+      name="$(curl -fsSL -D - -o /dev/null "$u" 2>/dev/null \
+              | sed -n 's/.*[Ff]ilename="*\([^";]*\)"*.*/\1/p' | tail -n1)"
     fi
-    name="$(curl -fsSL -D - -o /dev/null "$u" 2>/dev/null \
-            | sed -n 's/.*[Ff]ilename="*\([^";]*\)"*.*/\1/p' | tail -n1)"
     [[ -n "$name" ]] || name="$(basename "${u%%\?*}")"
     [[ -n "$name" ]] || { err "cannot tell a file name from $u"; rc=1; continue; }
     tag="$MIRROR_CODENAME"; [[ -n "$tag" ]] || tag="$(codename_of "$name")"
-    info "fetching $u -> $name (codename ${tag:-?})"
-    curl -fsSL -o "$dir/$name" "$u" || { err "download failed: $u"; rc=1; continue; }
     if [[ -z "$tag" ]]; then
       err "cannot tell the codename of $name - pass --codename NAME"
       rc=1; continue
     fi
-    publish_file "$dir/$name" "$name" "$tag" "tranG81 mirror $name" || rc=1
+    path="$dir/$name"
+    if [[ "$DRY_RUN" == "yes" ]]; then
+      say "    curl -fL -o $path $u   (codename $tag)"
+    else
+      info "fetching $u -> $name (codename $tag)"
+      curl -fsSL -o "$path" "$u" || { err "download failed: $u"; rc=1; continue; }
+    fi
+    ents+=("$tag|$name|$path")
   done
+  # 2) group per codename (one github release / one sf subfolder each) and publish
+  if (( ${#ents[@]} )); then
+    while IFS='|' read -r tag name path; do
+      [[ -n "$tag" ]] || continue
+      [[ "$tag" == "$cur" ]] || { cur="$tag"; info "codename $tag"; }
+      publish_file "$path" "$name" "$tag" "tranG81 mirror $name" || rc=1
+    done < <(printf '%s\n' "${ents[@]}" | sort -t'|' -k1,1)
+  fi
   return "$rc"
+}
+
+# publish the queued release links (--mirror or the menu "no build - links" row)
+# and exit; skips the build entirely.
+run_mirror_mode() {
+  RELEASE_ROOT="$ANDROID_ROOT/out/tranG81-releases"
+  if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
+    warn "release links given but no mirror is on - enable github and/or sourceforge"
+    exit 1
+  fi
+  mkdir -p "$RELEASE_ROOT"
+  if [[ "$DO_SF" == "yes" && -z "$SF_FOLDER" && -t 0 && -r /dev/tty ]]; then
+    sf_pick_folder || DO_SF="no"
+  fi
+  if ! mirror_links; then err "some files were not published"; exit 1; fi
+  if [[ ${#MIRROR_LINKS[@]} -gt 0 ]]; then
+    info "published:"
+    for a in "${MIRROR_LINKS[@]}"; do say "   $a"; done
+  fi
+  exit 0
 }
 
 main() {
@@ -2294,24 +2371,14 @@ main() {
   # what GApps/microG the tree actually provides, then the matching menu
   rom_prepare
 
-  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then
-    RELEASE_ROOT="$ANDROID_ROOT/out/tranG81-releases"
-    mkdir -p "$RELEASE_ROOT"
-    if [[ "$DO_SF" == "yes" && -z "$SF_FOLDER" && -t 0 && -r /dev/tty ]]; then
-      sf_pick_folder || DO_SF="no"
-    fi
-    if ! mirror_links; then err "some files were not published"; exit 1; fi
-    if [[ ${#MIRROR_LINKS[@]} -gt 0 ]]; then
-      info "published:"
-      for a in "${MIRROR_LINKS[@]}"; do say "   $a"; done
-    fi
-    exit 0
-  fi
+  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then run_mirror_mode; fi
 
   if [[ -z "$VARIANT" && "$REVERT_PATCHES" != "yes" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
     interactive_menu
   fi
+  # the TUI/plain menu may have queued release links -> publish those, no build
+  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then run_mirror_mode; fi
   if [[ "$REVERT_PATCHES" != "yes" ]]; then
     case "$VARIANT" in
       user|userdebug|eng) ;;
