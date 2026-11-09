@@ -41,6 +41,21 @@ BUZZ_DOWNLOAD_BASE="${BUZZHEAVIER_DOWNLOAD_BASE:-https://buzzheavier.com}"
 BUZZ_ACCOUNT_ID="${BUZZHEAVIER_ACCOUNT_ID:-}"
 BUZZ_FOLDER_ID="${BUZZHEAVIER_FOLDER_ID:-}"
 
+# SourceForge/GitHub account settings are remembered here (written by --setup),
+# so the login, project and folder are given only once.  Environment values or
+# command-line flags still win over the file.
+CONFIG_FILE="${BUILD_ALL_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/build-all/config}"
+if [[ -r "$CONFIG_FILE" ]]; then
+  while IFS= read -r _line; do
+    _line="${_line%$'\r'}"
+    _k="${_line%%=*}"; _v="${_line#*=}"
+    case " GH_RELEASE_REPO SF_USER SF_PROJECT SF_HOST SF_FOLDER " in
+      *" $_k "*) [[ -z "${!_k+x}" ]] && printf -v "$_k" '%s' "$_v" ;;
+    esac
+  done < "$CONFIG_FILE"
+  unset _line _k _v
+fi
+
 # extra release mirrors, off by default (Buzzheavier stays on -u):
 #   GitHub Releases - one release per codename, tag/name = the codename
 #     (X6531 .. KL5n).  Every asset of that codename is replaced each run, so a
@@ -136,6 +151,7 @@ DRY_RUN="no"
 CHECK_ONLY="no"
 NO_BUILD="no"
 REVERT_PATCHES="no"
+SETUP="no"
 NOTIFY_URL=""
 ANDROID_ROOT="${ANDROID_ROOT:-}"
 
@@ -480,8 +496,10 @@ Release mirrors (-u stays Buzzheavier):
   skipped with a warning.
   --sf rsyncs the same files over your SSH key to
   frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/.
-  The folder (SF_FOLDER) is chosen once from the project's folders or created
-  new; ssh runs in BatchMode, so a missing key fails fast instead of prompting.
+  Run --setup once to remember the SourceForge login, project and folder (and
+  the GitHub repo); they are stored in the config file and reused by later
+  runs.  The folder can also be chosen per run from the project's folders or
+  created new; ssh runs in BatchMode, so a missing key fails fast.
   --mirror skips the build: it downloads the given links (e.g. a past Buzzheavier
   upload), works out each file's codename from its name (--codename overrides)
   and publishes them to the enabled mirrors, then exits.
@@ -514,6 +532,9 @@ Options:
       --sf-folder NAME               SourceForge folder under the project; else
                                      the menu lists them and asks (file-manager
                                      style, "n" creates a new one)
+      --setup                        ask once for the GitHub repo and the
+                                     SourceForge login/project/folder and
+                                     remember them in the config file (no build)
       --mirror URL[,URL...]          no build: fetch these links and publish them
                                      to the enabled mirrors
       --codename NAME                codename for --mirror files (else it is read
@@ -551,6 +572,7 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      GH_RELEASE_REPO (default Transsion-G81/releases)  GH_TOKEN / GITHUB_TOKEN
      SF_USER (default opekfurina)  SF_PROJECT (default naze-release)
      SF_HOST (default frs.sourceforge.net)  SF_FOLDER
+     BUILD_ALL_CONFIG (default $HOME/.config/build-all/config; --setup writes it)
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
@@ -1635,6 +1657,39 @@ sf_pick_folder() {
   ok "sourceforge folder: $SF_FOLDER"
 }
 
+# --setup: ask once for the GitHub release repo and the SourceForge account,
+# project and folder, then save them so later runs need no flags.
+save_config() {
+  local dir; dir="$(dirname "$CONFIG_FILE")"
+  mkdir -p "$dir" || die "cannot create $dir"
+  {
+    printf '# build-all settings - written by --setup (%s)\n' "$(date -u +%Y-%m-%d)"
+    printf 'GH_RELEASE_REPO=%s\n' "$GH_RELEASE_REPO"
+    printf 'SF_USER=%s\n' "$SF_USER"
+    printf 'SF_PROJECT=%s\n' "$SF_PROJECT"
+    printf 'SF_HOST=%s\n' "$SF_HOST"
+    [[ -n "$SF_FOLDER" ]] && printf 'SF_FOLDER=%s\n' "$SF_FOLDER"
+  } > "$CONFIG_FILE" || die "cannot write $CONFIG_FILE"
+  ok "saved $CONFIG_FILE"
+}
+
+setup_mirrors() {
+  [[ -t 0 && -r /dev/tty ]] || die "--setup needs an interactive terminal"
+  say ""
+  info "GitHub + SourceForge setup  (saved to $CONFIG_FILE)"
+  say "  blank keeps the shown value; drop --setup to edit the file by hand"
+  GH_RELEASE_REPO="$(ask "GitHub release repo OWNER/REPO" "$GH_RELEASE_REPO")"
+  SF_USER="$(ask "SourceForge login (the ssh user)" "$SF_USER")"
+  SF_PROJECT="$(ask "SourceForge project" "$SF_PROJECT")"
+  SF_HOST="$(ask "SourceForge host" "$SF_HOST")"
+  if have ssh && have rsync && [[ -n "$SF_PROJECT" ]]; then
+    [[ "$(ask "list and pick the SourceForge folder now?" "y")" =~ ^[Yy] ]] && sf_pick_folder
+  else
+    warn "ssh/rsync not found (or project blank) - folder not picked"
+  fi
+  save_config
+}
+
 # Pure-bash full-screen TUI: every key (arrows included) arrives through
 # read -rsn1, so nothing has to be installed - no dialog, whiptail or fzf.
 # The tty state is saved up front and restored on every exit path.
@@ -2028,6 +2083,7 @@ parse_args() {
       --sf-user)      SF_USER="${2:-}"; shift 2 ;;
       --sf-project)   SF_PROJECT="${2:-}"; shift 2 ;;
       --sf-folder)    SF_FOLDER="${2:-}"; shift 2 ;;
+      --setup)        SETUP="yes"; shift ;;
       --mirror)       IFS=',' read -ra _m <<<"${2:-}"; MIRROR_URLS+=("${_m[@]}"); shift 2 ;;
       --codename)     MIRROR_CODENAME="${2:-}"; shift 2 ;;
       -a|--account)   BUZZ_ACCOUNT_ID="${2:-}"; shift 2 ;;
@@ -2147,6 +2203,7 @@ mirror_links() {
 
 main() {
   parse_args "$@"
+  if [[ "$SETUP" == "yes" ]]; then setup_mirrors; exit 0; fi
   apply_rom
   [[ -z "$NOTIFY_MODE" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] && NOTIFY_MODE="telegram"
   need curl; need sha1sum; need sha256sum; need base64
