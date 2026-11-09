@@ -64,13 +64,14 @@ fi
 #   SourceForge - rsync over your SSH key (BatchMode) into the FRS project tree,
 #     /home/frs/project/<project>/<folder>/<codename>/; the folder is asked once
 #     (list, pick or create) and kept in SF_FOLDER.
-GH_RELEASE_REPO="${GH_RELEASE_REPO:-Transsion-G81/releases}"
+GH_RELEASE_REPO="${GH_RELEASE_REPO:-Transsion-G81/release}"
 SF_USER="${SF_USER:-nazephyrus}"
 SF_PROJECT="${SF_PROJECT:-naze-release}"
 SF_HOST="${SF_HOST:-frs.sourceforge.net}"
 SF_FOLDER="${SF_FOLDER:-}"
 DO_GH="no"
 DO_SF="no"
+GH_CHECKED=""
 
 # status notifications: --notify URL (Discord/Slack webhook) or Telegram
 # (--notify telegram:TOKEN:CHAT, or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
@@ -539,7 +540,7 @@ Options:
                                      project (ssh+sftp+rsync); default no
       --no-sf                        do not publish to SourceForge
       --gh-repo OWNER/REPO           GitHub release repo
-                                     (default Transsion-G81/releases)
+                                     (default Transsion-G81/release)
       --sf-user NAME                 SourceForge login for ssh/sftp/rsync
                                      (default nazephyrus)
       --sf-project NAME              SourceForge project (default naze-release,
@@ -587,7 +588,7 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      overrides it per device, e.g. PRODUCT_EXTRA_LINES_X6532)
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
-     GH_RELEASE_REPO (default Transsion-G81/releases)  GH_TOKEN / GITHUB_TOKEN
+     GH_RELEASE_REPO (default Transsion-G81/release)  GH_TOKEN / GITHUB_TOKEN
      SF_USER (default nazephyrus)  SF_PROJECT (default naze-release)
      SF_HOST (default frs.sourceforge.net)  SF_FOLDER
      BUILD_ALL_CONFIG (default $HOME/.config/build-all/config; --setup writes it)
@@ -1064,6 +1065,25 @@ codename_of() {
   printf '%s' "$best"
 }
 
+# once per run: can the gh login write the release repo?  A 404 from a token
+# that cannot see the org repo is indistinguishable from a wrong repo name, so
+# both causes are named here instead of letting every file fail with one line.
+gh_ready() {
+  local push
+  gh auth status >/dev/null 2>&1 \
+    || { warn "github: gh is not logged in - run 'gh auth login' (or set GH_TOKEN)"; return 1; }
+  push="$(gh api "repos/$GH_RELEASE_REPO" --jq '.permissions.push' 2>/dev/null)" \
+    || { warn "github: cannot reach $GH_RELEASE_REPO - wrong repo name, or the gh login has no access (check 'gh auth status')"; return 1; }
+  [[ "$push" == "true" ]] \
+    || { warn "github: the gh login cannot write $GH_RELEASE_REPO - log in as an account that can push, or set GH_TOKEN"; return 1; }
+  return 0
+}
+
+gh_skip() {
+  warn "github: skipping GitHub for this run (other mirrors still run)"
+  DO_GH="no"
+}
+
 # GitHub: prepare the codename's release once per run, then upload (replace) one
 # file.  gh authenticates itself (GH_TOKEN / GITHUB_TOKEN / stored login).
 gh_publish() {
@@ -1072,6 +1092,10 @@ gh_publish() {
     say "    gh release create/edit $tag --repo $GH_RELEASE_REPO   (title $tag)"
     say "    gh release upload $tag $file --repo $GH_RELEASE_REPO --clobber"
     return 0
+  fi
+  if [[ -z "$GH_CHECKED" ]]; then
+    GH_CHECKED=1
+    gh_ready || { gh_skip; return 0; }
   fi
   if [[ -z "${GH_MIRRORED[$tag]:-}" ]]; then
     if gh release view "$tag" --repo "$GH_RELEASE_REPO" >/dev/null 2>&1; then
@@ -2508,6 +2532,10 @@ main() {
   if [[ "$DO_GH" == "yes" ]] && ! have gh; then
     warn "github: gh CLI not found - GitHub release skipped"
     DO_GH="no"
+  fi
+  if [[ "$DO_GH" == "yes" && "$DRY_RUN" != "yes" ]]; then
+    GH_CHECKED=1
+    gh_ready || gh_skip
   fi
   if [[ "$DO_SF" == "yes" ]] && { ! have ssh || ! have rsync || ! have sftp; }; then
     warn "sourceforge: ssh/rsync/sftp not found - SourceForge skipped"

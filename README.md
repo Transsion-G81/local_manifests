@@ -91,11 +91,13 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 
 # also publish to GitHub Releases and/or SourceForge (Buzzheavier stays on -u)
 # --gh -> one release per codename (tag and name = X6531/X6531B/X6532/KL5/KL5n)
-#        in GH_RELEASE_REPO (default Transsion-G81/releases).  The rom zip and
+#        in GH_RELEASE_REPO (default Transsion-G81/release).  The rom zip and
 #        the tagged boot/vendor_boot images are replaced on every run, so a
 #        rebuild across ROMs/GMS modes lands in the same release.  gh
 #        authenticates itself (GH_TOKEN/GITHUB_TOKEN or `gh auth login`); with
-#        no gh CLI, github is skipped with a warning.
+#        no gh CLI, or a login that cannot write the repo (a 404 on an org repo
+#        usually means no access, not a wrong name), github is skipped with a
+#        warning and the other mirrors still run.
 # --sf -> rsync the same files over your SSH key to
 #        frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/
 #        SF_PROJECT defaults to naze-release (https://sourceforge.net/projects/naze-release/);
@@ -118,7 +120,7 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # still win over the file.
 ./build-all.sh --setup
 ./build-all.sh -v user -u yes --gh --sf
-./build-all.sh -v user --gh --sf --sf-project naze-release --sf-folder releases --gh-repo Transsion-G81/releases
+./build-all.sh -v user --gh --sf --sf-project naze-release --sf-folder releases --gh-repo Transsion-G81/release
 
 # no build: publish files from a past Buzzheavier (or any) link.  paste a whole
 # download-links block and each URL takes the file name of the label line above
