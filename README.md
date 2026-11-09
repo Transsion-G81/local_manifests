@@ -99,9 +99,10 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 #        SF_PROJECT defaults to naze-release (https://sourceforge.net/projects/naze-release/);
 #        SF_FOLDER is asked once - it lists the project's folders and "n" creates
 #        a new one (file-manager style) - or pass --sf-folder NAME.  SF_USER is
-#        your SourceForge login (default opekfurina); override with --sf-user
-#        NAME / SF_USER.  ssh runs in BatchMode, so set up your SourceForge SSH
-#        key first.
+#        your SourceForge login (default nazephyrus); override with --sf-user
+#        NAME / SF_USER.  The FRS login is a copy-only shell, so folders are
+#        listed/created over sftp and files sent with rsync; both run in
+#        BatchMode, so set up your SourceForge SSH key first (see --setup).
 
 # set the account/project/folder once and forget the flags: --setup makes an
 # SSH keypair (~/.ssh/id_ed25519) if you have none and prints the public key to

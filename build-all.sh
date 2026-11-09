@@ -65,7 +65,7 @@ fi
 #     /home/frs/project/<project>/<folder>/<codename>/; the folder is asked once
 #     (list, pick or create) and kept in SF_FOLDER.
 GH_RELEASE_REPO="${GH_RELEASE_REPO:-Transsion-G81/releases}"
-SF_USER="${SF_USER:-opekfurina}"
+SF_USER="${SF_USER:-nazephyrus}"
 SF_PROJECT="${SF_PROJECT:-naze-release}"
 SF_HOST="${SF_HOST:-frs.sourceforge.net}"
 SF_FOLDER="${SF_FOLDER:-}"
@@ -485,7 +485,7 @@ the expiry is printed (anonymous links expire in a few days).  With Telegram
 notify, a second message lists the download link of every uploaded file,
 grouped per device and tagged rom / boot / vendor_boot / image.
 Requires: bash 4+, curl, sha1sum, sha256sum, base64.  Optional: gh (GitHub
-releases) and ssh + rsync (SourceForge).  chmod +x this file first.
+releases) and ssh + sftp + rsync (SourceForge).  chmod +x this file first.
 
 Release mirrors (-u stays Buzzheavier):
   --gh publishes each codename to one GitHub release (tag and name = the
@@ -524,12 +524,12 @@ Options:
                                      assets replaced each run); default no
       --no-gh                        do not publish to GitHub
       --sf [yes|no]                  also publish to SourceForge under the FRS
-                                     project (ssh+rsync); default no
+                                     project (ssh+sftp+rsync); default no
       --no-sf                        do not publish to SourceForge
       --gh-repo OWNER/REPO           GitHub release repo
                                      (default Transsion-G81/releases)
-      --sf-user NAME                 SourceForge login for ssh/rsync
-                                     (default opekfurina)
+      --sf-user NAME                 SourceForge login for ssh/sftp/rsync
+                                     (default nazephyrus)
       --sf-project NAME              SourceForge project (default naze-release,
                                      https://sourceforge.net/projects/<NAME>/)
       --sf-folder NAME               SourceForge folder under the project; else
@@ -575,7 +575,7 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
      GH_RELEASE_REPO (default Transsion-G81/releases)  GH_TOKEN / GITHUB_TOKEN
-     SF_USER (default opekfurina)  SF_PROJECT (default naze-release)
+     SF_USER (default nazephyrus)  SF_PROJECT (default naze-release)
      SF_HOST (default frs.sourceforge.net)  SF_FOLDER
      BUILD_ALL_CONFIG (default $HOME/.config/build-all/config; --setup writes it)
 
@@ -1080,6 +1080,38 @@ gh_publish() {
 
 sf_remote_dir() { printf '/home/frs/project/%s/%s/%s' "$SF_PROJECT" "$SF_FOLDER" "$1"; }
 
+# common ssh/sftp options: never prompt, accept a new host key once (TOFU),
+# bounded wait.  The FRS login is a restricted, copy-only shell, so plain
+# "ssh host mkdir" is refused - folders are made and listed over sftp.
+SF_SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
+
+# create a folder tree under the project root over SFTP; "-mkdir" is best-effort
+# (an already-existing folder is not an error).
+sf_sftp_mkdir() {
+  local base p c
+  base="/home/frs/project/$SF_PROJECT"; p="$base"
+  local -a parts=() cmds=()
+  IFS='/' read -ra parts <<<"${1#"$base"/}"
+  for c in "${parts[@]}"; do
+    [[ -n "$c" ]] || continue
+    p="$p/$c"; cmds+=("-mkdir $p")
+  done
+  printf '%s\n' "${cmds[@]}" | sftp "${SF_SSH_OPTS[@]}" -q -b - "$SF_USER@$SF_HOST" >/dev/null 2>&1
+}
+
+# a working key shows the SourceForge "Welcome / restricted shell" banner; a
+# bad key prints "Permission denied" and exits non-zero, so judge by the banner.
+sf_ssh_test() {
+  local out rc
+  out="$(ssh "${SF_SSH_OPTS[@]}" -T "$SF_USER@$SF_HOST" </dev/null 2>&1)"; rc=$?
+  if [[ "$out" == *[Ww]elcome* || "$out" == *restricted* || "$rc" -eq 0 ]]; then
+    ok "SourceForge SSH works - key accepted"
+  else
+    warn "SSH to $SF_USER@$SF_HOST failed:"
+    [[ -n "$out" ]] && printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+}
+
 # SourceForge: make the codename's folder (if needed) and rsync the file in.
 sf_publish() {
   local file="$1" name="$2" tag="$3" rdir rurl
@@ -1090,15 +1122,12 @@ sf_publish() {
   rdir="$(sf_remote_dir "$tag")"
   rurl="$SF_USER@$SF_HOST:$rdir"
   if [[ "$DRY_RUN" == "yes" ]]; then
-    say "    ssh $SF_USER@$SF_HOST mkdir -p $rdir"
+    say "    sftp $SF_USER@$SF_HOST   (mkdir $rdir)"
     say "    rsync -e ssh $file $rurl/"
     return 0
   fi
-  if ! ssh -o BatchMode=yes "$SF_USER@$SF_HOST" "mkdir -p '$rdir'"; then
-    err "sourceforge: mkdir failed ($rdir)"
-    return 1
-  fi
-  if rsync -e "ssh -o BatchMode=yes" --partial "$file" "$rurl/"; then
+  sf_sftp_mkdir "$rdir"
+  if rsync -e "ssh ${SF_SSH_OPTS[*]}" --partial "$file" "$rurl/"; then
     ok "sourceforge  $SF_FOLDER/$tag <- $name"
     SF_UPLOADED=$((SF_UPLOADED + 1))
     MIRROR_LINKS+=("https://sourceforge.net/projects/$SF_PROJECT/files/$SF_FOLDER/$tag/ $name (sourceforge)")
@@ -1117,10 +1146,13 @@ publish_file() {
   return "$rc"
 }
 
-# ssh ls the project's SourceForge folders (its FRS root), minus the web tree.
+# list the project's SourceForge folders (its FRS root) over sftp, minus the
+# web tree.  -1 prints bare names; the sed trims any path prefix/whitespace.
 sf_list_folders() {
-  ssh -o BatchMode=yes "$SF_USER@$SF_HOST" "ls -1 /home/frs/project/$SF_PROJECT" 2>/dev/null \
-    | grep -vE '^(htdocs|\.)'
+  printf 'ls -1 /home/frs/project/%s\n' "$SF_PROJECT" \
+    | sftp "${SF_SSH_OPTS[@]}" -q -b - "$SF_USER@$SF_HOST" 2>/dev/null \
+    | sed -e 's#[[:space:]]*$##' -e 's#.*/##' -e 's#^[[:space:]]*##' \
+    | grep -vE '^(htdocs|\.|Connected|sftp)' | grep -v '^$'
 }
 
 # POST a one-line status to a Discord/Slack webhook or a Telegram chat (best
@@ -1715,12 +1747,7 @@ setup_mirrors() {
   setup_ssh_key
   if have ssh && [[ -n "$SF_USER" ]] \
      && [[ "$(ask "test the SourceForge SSH connection now?" "y")" =~ ^[Yy] ]]; then
-    if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
-           "$SF_USER@$SF_HOST" true 2>/dev/null; then
-      ok "SourceForge SSH works - key accepted"
-    else
-      warn "SSH to $SF_USER@$SF_HOST failed - paste the key above first"
-    fi
+    sf_ssh_test
   fi
   if have ssh && have rsync && [[ -n "$SF_PROJECT" ]]; then
     [[ "$(ask "list and pick the SourceForge folder now?" "y")" =~ ^[Yy] ]] && sf_pick_folder
@@ -2251,8 +2278,8 @@ main() {
     warn "github: gh CLI not found - GitHub release skipped"
     DO_GH="no"
   fi
-  if [[ "$DO_SF" == "yes" ]] && { ! have ssh || ! have rsync; }; then
-    warn "sourceforge: ssh/rsync not found - SourceForge skipped"
+  if [[ "$DO_SF" == "yes" ]] && { ! have ssh || ! have rsync || ! have sftp; }; then
+    warn "sourceforge: ssh/rsync/sftp not found - SourceForge skipped"
     DO_SF="no"
   fi
   find_root
