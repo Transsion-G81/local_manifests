@@ -28,6 +28,8 @@ chmod +x build-all.sh
 # the rom / the variant / the gms set, a/n select all/none devices, x toggles
 # xgsi, g cycles the gms set, e (or enter on the "make lines" row) edits the
 # extra make lines, r reverts our tree patches and stops, enter starts, q quits.
+# the "github release" / "sourceforge" rows toggle those mirrors and the
+# "sf folder" row (space/enter) opens the SourceForge folder picker.
 # the "rom" row reloads the picked profile's devices and gms menu, so every
 # profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
@@ -83,6 +85,25 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # sign in to buzzheavier for longer-lived links (anonymous links expire in a
 # few days; the expiry is printed for every upload)
 ./build-all.sh -v userdebug -u yes -a <account_id>
+
+# also publish to GitHub Releases and/or SourceForge (Buzzheavier stays on -u)
+# --gh -> one release per codename (tag and name = X6531/X6531B/X6532/KL5/KL5n)
+#        in GH_RELEASE_REPO (default Transsion-G81/releases).  The rom zip and
+#        the tagged boot/vendor_boot images are replaced on every run, so a
+#        rebuild across ROMs/GMS modes lands in the same release.  gh
+#        authenticates itself (GH_TOKEN/GITHUB_TOKEN or `gh auth login`); with
+#        no gh CLI, github is skipped with a warning.
+# --sf -> rsync the same files over your SSH key to
+#        frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/
+#        SF_FOLDER is asked once - it lists the project's folders and "n" creates
+#        a new one (file-manager style) - or pass --sf-folder NAME.  ssh runs in
+#        BatchMode, so set up your SourceForge SSH key first.
+./build-all.sh -v user -u yes --gh --sf
+./build-all.sh -v user --gh --sf --sf-folder releases --gh-repo Transsion-G81/releases
+
+# no build: publish files straight from a past Buzzheavier (or any) link; the
+# codename is read from each file's own name (override with --codename NAME)
+./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 
 # bigger/faster: ccache, explicit jobs, extra image (dtbo)
 CCACHE_SIZE=50G ./build-all.sh -v userdebug -u yes --jobs 16

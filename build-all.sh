@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
 # tranG81 - build + release every device, then upload the ROM zip plus
-# boot.img and vendor_boot.img of each device to Buzzheavier.
+# boot.img and vendor_boot.img of each device to Buzzheavier.  The same files
+# can also be mirrored to GitHub Releases and SourceForge (--gh / --sf), or a
+# past Buzzheavier link published on its own (--mirror).
 #
 # The ROM is chosen with --rom (default lineage); a profile supplies the
 # product prefix, artifact name, supported GMS modes and who provides the
@@ -38,6 +40,22 @@ BUZZ_UPLOAD_BASE="${BUZZHEAVIER_UPLOAD_BASE:-https://w.buzzheavier.com}"
 BUZZ_DOWNLOAD_BASE="${BUZZHEAVIER_DOWNLOAD_BASE:-https://buzzheavier.com}"
 BUZZ_ACCOUNT_ID="${BUZZHEAVIER_ACCOUNT_ID:-}"
 BUZZ_FOLDER_ID="${BUZZHEAVIER_FOLDER_ID:-}"
+
+# extra release mirrors, off by default (Buzzheavier stays on -u):
+#   GitHub Releases - one release per codename, tag/name = the codename
+#     (X6531 .. KL5n).  Every asset of that codename is replaced each run, so a
+#     ROM rebuilt across ROMs/GMS modes accumulates in the same release.  gh
+#     CLI auth (GH_TOKEN/GITHUB_TOKEN or a stored login); no gh, no release.
+#   SourceForge - rsync over your SSH key (BatchMode) into the FRS project tree,
+#     /home/frs/project/<project>/<folder>/<codename>/; the folder is asked once
+#     (list, pick or create) and kept in SF_FOLDER.
+GH_RELEASE_REPO="${GH_RELEASE_REPO:-Transsion-G81/releases}"
+SF_USER="${SF_USER:-opekfurina}"
+SF_PROJECT="${SF_PROJECT:-transsion-g81}"
+SF_HOST="${SF_HOST:-frs.sourceforge.net}"
+SF_FOLDER="${SF_FOLDER:-}"
+DO_GH="no"
+DO_SF="no"
 
 # status notifications: --notify URL (Discord/Slack webhook) or Telegram
 # (--notify telegram:TOKEN:CHAT, or TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
@@ -133,10 +151,14 @@ LOG_DIR=""
 declare -a BUILT=() FAILED=() LINKS=() SELECTED=() COLLECTED=()
 declare -a TIMING=() DIRTY=() REL_JSON=() LINK_BLOCKS=()
 declare -a GMS_WANT=() GMS_MODE_LIST=()
+declare -a MIRROR_URLS=() MIRROR_LINKS=()
+declare -A GH_MIRRORED=()
 GMS_MODE="" RELEASE_MODE_DIR=""
 
 # filled in by bh_upload() for the caller
 LAST_URL="" LAST_SHA256="" LAST_EXPIRY="" UPLOADED=0 EXPIRY_WARNED="no"
+# release-mirror counters and the --mirror codename override
+GH_UPLOADED=0 SF_UPLOADED=0 MIRROR_CODENAME=""
 RUN_START=0
 
 # ------------------------------------------------------------------ utils ----
@@ -443,7 +465,23 @@ them; each upload is sha256-verified against the hash the service reports, and
 the expiry is printed (anonymous links expire in a few days).  With Telegram
 notify, a second message lists the download link of every uploaded file,
 grouped per device and tagged rom / boot / vendor_boot / image.
-Requires: bash 4+, curl, sha1sum, sha256sum, base64.  chmod +x this file first.
+Requires: bash 4+, curl, sha1sum, sha256sum, base64.  Optional: gh (GitHub
+releases) and ssh + rsync (SourceForge).  chmod +x this file first.
+
+Release mirrors (-u stays Buzzheavier):
+  --gh publishes each codename to one GitHub release (tag and name = the
+  codename, e.g. X6532; its assets - rom zip, boot-<dev>.img,
+  vendor_boot-<dev>.img and EXTRA_IMAGES - are replaced on every run, so a
+  rebuild across ROMs/GMS modes lands in the same release).  gh authenticates
+  itself from GH_TOKEN / GITHUB_TOKEN or a stored login; with no gh, GitHub is
+  skipped with a warning.
+  --sf rsyncs the same files over your SSH key to
+  frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/.
+  The folder (SF_FOLDER) is chosen once from the project's folders or created
+  new; ssh runs in BatchMode, so a missing key fails fast instead of prompting.
+  --mirror skips the build: it downloads the given links (e.g. a past Buzzheavier
+  upload), works out each file's codename from its name (--codename overrides)
+  and publishes them to the enabled mirrors, then exits.
 
 Options:
       --rom NAME                     ROM profile: lineage, evox (Evolution X),
@@ -457,6 +495,22 @@ Options:
   -a, --account ID                   Buzzheavier account id (else anonymous)
       --folder ID                    upload into this Buzzheavier directory id
       --no-note                      skip the Buzzheavier note
+      --gh [yes|no]                  also publish to GitHub Releases
+                                     (GH_RELEASE_REPO, one release per codename,
+                                     assets replaced each run); default no
+      --no-gh                        do not publish to GitHub
+      --sf [yes|no]                  also publish to SourceForge under the FRS
+                                     project (ssh+rsync); default no
+      --no-sf                        do not publish to SourceForge
+      --gh-repo OWNER/REPO           GitHub release repo
+                                     (default Transsion-G81/releases)
+      --sf-folder NAME               SourceForge folder under the project; else
+                                     the menu lists them and asks (file-manager
+                                     style, "n" creates a new one)
+      --mirror URL[,URL...]          no build: fetch these links and publish them
+                                     to the enabled mirrors
+      --codename NAME                codename for --mirror files (else it is read
+                                     from the file's own name)
       --jobs N                       parallel jobs for the ROM's build
                                      (default: mka/ax default)
       --ccache SIZE                  enable ccache and cap it at SIZE (e.g. 50G)
@@ -487,6 +541,9 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      overrides it per device, e.g. PRODUCT_EXTRA_LINES_X6532)
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
+     GH_RELEASE_REPO (default Transsion-G81/releases)  GH_TOKEN / GITHUB_TOKEN
+     SF_USER (default opekfurina)  SF_PROJECT (default transsion-g81)
+     SF_HOST (default frs.sourceforge.net)  SF_FOLDER
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
@@ -939,6 +996,97 @@ bh_upload() {
   fi
   LINKS+=("$LAST_URL $name")
   UPLOADED=$((UPLOADED + 1))
+}
+
+# --------------------------------------------------------- release mirrors ----
+# GitHub Releases + SourceForge, fed the same collected files (rom zip plus
+# boot/vendor_boot and EXTRA_IMAGES).  Each codename owns one GitHub release and
+# one SourceForge subfolder; files are replaced, never versioned.
+
+# the codename a bare file name belongs to; the longest DEVICES key wins, so
+# boot-X6531B.img is X6531B and not X6531.
+codename_of() {
+  local name="$1" e key best=""
+  for e in "${DEVICES[@]}"; do
+    key="${e%%|*}"; key="${key#$ROM_PREFIX}"
+    [[ "$name" == *"$key"* ]] || continue
+    (( ${#key} > ${#best} )) && best="$key"
+  done
+  printf '%s' "$best"
+}
+
+# GitHub: prepare the codename's release once per run, then upload (replace) one
+# file.  gh authenticates itself (GH_TOKEN / GITHUB_TOKEN / stored login).
+gh_publish() {
+  local file="$1" name="$2" tag="$3" notes="${4:-}"
+  if [[ "$DRY_RUN" == "yes" ]]; then
+    say "    gh release create/edit $tag --repo $GH_RELEASE_REPO   (title $tag)"
+    say "    gh release upload $tag $file --repo $GH_RELEASE_REPO --clobber"
+    return 0
+  fi
+  if [[ -z "${GH_MIRRORED[$tag]:-}" ]]; then
+    if gh release view "$tag" --repo "$GH_RELEASE_REPO" >/dev/null 2>&1; then
+      gh release edit "$tag" --repo "$GH_RELEASE_REPO" --title "$tag" --notes "$notes" >/dev/null 2>&1 \
+        || warn "github: could not update release $tag"
+    elif ! gh release create "$tag" --repo "$GH_RELEASE_REPO" --title "$tag" --notes "$notes" >/dev/null; then
+      err "github: could not create release $tag"
+      return 1
+    fi
+    GH_MIRRORED[$tag]=1
+  fi
+  if gh release upload "$tag" "$file" --repo "$GH_RELEASE_REPO" --clobber >/dev/null; then
+    ok "github  $tag <- $name"
+    GH_UPLOADED=$((GH_UPLOADED + 1))
+    MIRROR_LINKS+=("https://github.com/$GH_RELEASE_REPO/releases/tag/$tag $name (github)")
+  else
+    err "github: upload failed for $name ($tag)"
+    return 1
+  fi
+}
+
+sf_remote_dir() { printf '/home/frs/project/%s/%s/%s' "$SF_PROJECT" "$SF_FOLDER" "$1"; }
+
+# SourceForge: make the codename's folder (if needed) and rsync the file in.
+sf_publish() {
+  local file="$1" name="$2" tag="$3" rdir rurl
+  if [[ -z "$SF_FOLDER" ]]; then
+    err "sourceforge: no folder chosen (use --sf-folder NAME or the menu)"
+    return 1
+  fi
+  rdir="$(sf_remote_dir "$tag")"
+  rurl="$SF_USER@$SF_HOST:$rdir"
+  if [[ "$DRY_RUN" == "yes" ]]; then
+    say "    ssh $SF_USER@$SF_HOST mkdir -p $rdir"
+    say "    rsync -e ssh $file $rurl/"
+    return 0
+  fi
+  if ! ssh -o BatchMode=yes "$SF_USER@$SF_HOST" "mkdir -p '$rdir'"; then
+    err "sourceforge: mkdir failed ($rdir)"
+    return 1
+  fi
+  if rsync -e "ssh -o BatchMode=yes" --partial "$file" "$rurl/"; then
+    ok "sourceforge  $SF_FOLDER/$tag <- $name"
+    SF_UPLOADED=$((SF_UPLOADED + 1))
+    MIRROR_LINKS+=("https://sourceforge.net/projects/$SF_PROJECT/files/$SF_FOLDER/$tag/ $name (sourceforge)")
+  else
+    err "sourceforge: upload failed for $name ($tag)"
+    return 1
+  fi
+}
+
+# send one file to every enabled mirror; the codename tag comes from the caller.
+publish_file() {
+  local file="$1" name="$2" tag="$3" notes="${4:-}" rc=0
+  [[ -n "$tag" ]] || { err "cannot tell the codename of $name"; return 1; }
+  [[ "$DO_GH" == "yes" ]] && { gh_publish "$file" "$name" "$tag" "$notes" || rc=1; }
+  [[ "$DO_SF" == "yes" ]] && { sf_publish "$file" "$name" "$tag" || rc=1; }
+  return "$rc"
+}
+
+# ssh ls the project's SourceForge folders (its FRS root), minus the web tree.
+sf_list_folders() {
+  ssh -o BatchMode=yes "$SF_USER@$SF_HOST" "ls -1 /home/frs/project/$SF_PROJECT" 2>/dev/null \
+    | grep -vE '^(htdocs|\.)'
 }
 
 # POST a one-line status to a Discord/Slack webhook or a Telegram chat (best
@@ -1456,12 +1604,38 @@ add_json_record() {
 
 ask() { local p="$1" d="$2" a; read -r -p "$p [$d]: " a </dev/tty; printf '%s' "${a:-$d}"; }
 
+# choose the SourceForge folder interactively: list the project's folders, pick
+# one by number or name, or "n" to create a new one.  Writes SF_FOLDER.
+sf_pick_folder() {
+  local -a folders=(); local i choice new
+  mapfile -t folders < <(sf_list_folders)
+  say ""
+  info "SourceForge folder under /home/frs/project/$SF_PROJECT"
+  for i in "${!folders[@]}"; do say "  $((i + 1))) ${folders[$i]}"; done
+  (( ${#folders[@]} )) || say "  (none found - check your SourceForge SSH key, or name a new folder)"
+  say "  n) new folder"
+  choice="$(ask "folder number, name, or n" "${SF_FOLDER:-n}")"
+  case "$choice" in
+    n|N|new)
+      new="$(ask "new folder name" "${SF_FOLDER:-}")"
+      [[ -n "$new" ]] || { warn "sourceforge: no folder name given"; return 1; }
+      SF_FOLDER="$new" ;;
+    ''|*[!0-9]*) SF_FOLDER="$choice" ;;
+    *) i=$((choice - 1))
+       if [[ -n "${folders[$i]:-}" ]]; then SF_FOLDER="${folders[$i]}"
+       else warn "sourceforge: no folder $choice"; return 1; fi ;;
+  esac
+  ok "sourceforge folder: $SF_FOLDER"
+}
+
 # Pure-bash full-screen TUI: every key (arrows included) arrives through
 # read -rsn1, so nothing has to be installed - no dialog, whiptail or fzf.
 # The tty state is saved up front and restored on every exit path.
 TUI_FOCUS=0
 TUI_VARIANT="user"
 TUI_UPLOAD="yes"
+TUI_GH="no"
+TUI_SF="no"
 TUI_XGSI="no"
 TUI_GMS=0
 TUI_STATUS=""
@@ -1563,6 +1737,18 @@ tui_edit_lines() {
   printf '\033[2J\033[?25l'
 }
 
+# pick the SourceForge folder from the TUI: drop to cooked mode, reuse the plain
+# picker, then restore raw mode before redrawing.
+tui_sf_folder() {
+  stty "$TUI_STTY" </dev/tty 2>/dev/null
+  printf '\033[?25h\033[2J\033[H'
+  sf_pick_folder || true
+  printf '\n  press enter to return'
+  IFS= read -r _ </dev/tty || true
+  stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+  printf '\033[2J\033[?25l'
+}
+
 tui_render() {
   local n=${#DEVICES[@]} i lab short row
   printf '\033[H'
@@ -1615,11 +1801,25 @@ tui_render() {
   else lab="(none)"; fi
   (( TUI_FOCUS == n + 5 )) && row+="${c_bold}make lines: $lab${c_reset}" || row+="make lines: $lab"
   printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 6)))"
+  [[ "$TUI_GH" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 6 )) && row+="${c_bold}github release ($GH_RELEASE_REPO)${c_reset}" || row+="github release ($GH_RELEASE_REPO)"
+  printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 7)))"
+  [[ "$TUI_SF" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 7 )) && row+="${c_bold}sourceforge ($SF_PROJECT)${c_reset}" || row+="sourceforge ($SF_PROJECT)"
+  printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 8)))"
+  (( TUI_FOCUS == n + 8 )) && row+="${c_bold}sf folder: ${SF_FOLDER:-<pick>}${c_reset}" || row+="sf folder: ${SF_FOLDER:-<pick>}"
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
   printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s rom/variant/gms   %sa%s all   %sn%s none\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
-  printf '   %sx%s xgsi   %sg%s gms   %se%s make lines   %sr%s revert   %senter%s start   %sq%s quit\033[K\n' \
+  printf '   %sx%s xgsi   %sg%s gms   %se%s make lines   %sr%s revert   %senter%s start/choose   %sq%s quit\033[K\n' \
     "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset" "$c_cyn" "$c_reset"
   [[ -n "$TUI_STATUS" ]] && printf '   %s%s%s\033[K\n' "$c_yel" "$TUI_STATUS" "$c_reset" || printf '\033[K\n'
   printf '\033[J'
@@ -1628,6 +1828,7 @@ tui_render() {
 tui_run() {
   local n=${#DEVICES[@]} i key short req="" all=1 any
   TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0; REVERT_PATCHES="no"
+  TUI_GH="$DO_GH"; TUI_SF="$DO_SF"
   TUI_ROM=0
   for i in "${!ROMS[@]}"; do [[ "${ROMS[$i]}" == "$ROM" ]] && TUI_ROM=$i; done
   TUI_SEL=()
@@ -1647,7 +1848,7 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 5 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 8 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
         if   (( TUI_FOCUS == 0 ));     then tui_cycle_rom "$key"
         elif (( TUI_FOCUS == 1 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
@@ -1662,6 +1863,9 @@ tui_run() {
         elif (( TUI_FOCUS == n + 3 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
         elif (( TUI_FOCUS == n + 4 )); then TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]}))
         elif (( TUI_FOCUS == n + 5 )); then tui_edit_lines
+        elif (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"
+        elif (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"
+        elif (( TUI_FOCUS == n + 8 )); then tui_sf_folder
         else TUI_SEL[TUI_FOCUS - 2]=$((1 - TUI_SEL[TUI_FOCUS - 2]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
@@ -1678,6 +1882,9 @@ tui_run() {
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
         if (( TUI_FOCUS == n + 5 )); then tui_edit_lines; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 8 )); then tui_sf_folder; tui_render; continue; fi
         any=0
         for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
         if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
@@ -1696,6 +1903,8 @@ tui_run() {
   printf '\033[2J\033[H'
   VARIANT="$TUI_VARIANT"
   DO_UPLOAD="$TUI_UPLOAD"
+  DO_GH="$TUI_GH"
+  DO_SF="$TUI_SF"
   [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
   GMS_WANT=("${TUI_GMS_MODES[$TUI_GMS]}")
   PRODUCT_EXTRA_LINES="$TUI_LINES"
@@ -1742,6 +1951,10 @@ menu_ask() {
 
   [[ "$(ask "upload to Buzzheavier?" "y")" =~ ^[Yy] ]] && DO_UPLOAD="yes" || DO_UPLOAD="no"
 
+  [[ "$(ask "publish to GitHub release ($GH_RELEASE_REPO)?" "n")" =~ ^[Yy] ]] && DO_GH="yes" || DO_GH="no"
+  [[ "$(ask "publish to SourceForge ($SF_PROJECT)?" "n")" =~ ^[Yy] ]] && DO_SF="yes" || DO_SF="no"
+  if [[ "$DO_SF" == "yes" && -z "$SF_FOLDER" ]]; then sf_pick_folder || DO_SF="no"; fi
+
   say ""
   info "gms modes"
   select gm in "${MENU_GMS_OPTS[@]}"; do
@@ -1781,6 +1994,20 @@ parse_args() {
         if [[ "${1:-}" == "yes" || "${1:-}" == "no" ]]; then DO_UPLOAD="$1"; shift; fi
         ;;
       --no-upload)    DO_UPLOAD="no"; shift ;;
+      --gh)
+        DO_GH="yes"; shift
+        if [[ "${1:-}" == "yes" || "${1:-}" == "no" ]]; then DO_GH="$1"; shift; fi
+        ;;
+      --no-gh)        DO_GH="no"; shift ;;
+      --sf)
+        DO_SF="yes"; shift
+        if [[ "${1:-}" == "yes" || "${1:-}" == "no" ]]; then DO_SF="$1"; shift; fi
+        ;;
+      --no-sf)        DO_SF="no"; shift ;;
+      --gh-repo)      GH_RELEASE_REPO="${2:-}"; shift 2 ;;
+      --sf-folder)    SF_FOLDER="${2:-}"; shift 2 ;;
+      --mirror)       IFS=',' read -ra _m <<<"${2:-}"; MIRROR_URLS+=("${_m[@]}"); shift 2 ;;
+      --codename)     MIRROR_CODENAME="${2:-}"; shift 2 ;;
       -a|--account)   BUZZ_ACCOUNT_ID="${2:-}"; shift 2 ;;
       --folder)       BUZZ_FOLDER_ID="${2:-}"; shift 2 ;;
       --no-note)      DO_NOTE="no"; shift ;;
@@ -1862,14 +2089,70 @@ on_interrupt() {
   exit 130
 }
 
+# --mirror URL[,URL...]: no build - fetch files straight from a Buzzheavier (or
+# any) link and publish them to the enabled mirrors.  The codename is read from
+# the file's own name (boot/vendor_boot/zip keep their tag), or forced with
+# --codename NAME.
+mirror_links() {
+  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" u name tag rc=0
+  [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
+    || die "--mirror needs a destination: add --gh and/or --sf"
+  mkdir -p "$dir" || return 1
+  for u in "${MIRROR_URLS[@]}"; do
+    [[ -n "$u" ]] || continue
+    if [[ "$DRY_RUN" == "yes" ]]; then
+      name="$(basename "${u%%\?*}")"
+      tag="$MIRROR_CODENAME"; [[ -n "$tag" ]] || tag="$(codename_of "$name")"
+      say "    curl -fL -o $dir/$name $u   (codename ${tag:-?})"
+      publish_file "$dir/$name" "$name" "$tag" "tranG81 mirror $name" || rc=1
+      continue
+    fi
+    name="$(curl -fsSL -D - -o /dev/null "$u" 2>/dev/null \
+            | sed -n 's/.*[Ff]ilename="*\([^";]*\)"*.*/\1/p' | tail -n1)"
+    [[ -n "$name" ]] || name="$(basename "${u%%\?*}")"
+    [[ -n "$name" ]] || { err "cannot tell a file name from $u"; rc=1; continue; }
+    tag="$MIRROR_CODENAME"; [[ -n "$tag" ]] || tag="$(codename_of "$name")"
+    info "fetching $u -> $name (codename ${tag:-?})"
+    curl -fsSL -o "$dir/$name" "$u" || { err "download failed: $u"; rc=1; continue; }
+    if [[ -z "$tag" ]]; then
+      err "cannot tell the codename of $name - pass --codename NAME"
+      rc=1; continue
+    fi
+    publish_file "$dir/$name" "$name" "$tag" "tranG81 mirror $name" || rc=1
+  done
+  return "$rc"
+}
+
 main() {
   parse_args "$@"
   apply_rom
   [[ -z "$NOTIFY_MODE" && -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] && NOTIFY_MODE="telegram"
   need curl; need sha1sum; need sha256sum; need base64
+  if [[ "$DO_GH" == "yes" ]] && ! have gh; then
+    warn "github: gh CLI not found - GitHub release skipped"
+    DO_GH="no"
+  fi
+  if [[ "$DO_SF" == "yes" ]] && { ! have ssh || ! have rsync; }; then
+    warn "sourceforge: ssh/rsync not found - SourceForge skipped"
+    DO_SF="no"
+  fi
   find_root
   # what GApps/microG the tree actually provides, then the matching menu
   rom_prepare
+
+  if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then
+    RELEASE_ROOT="$ANDROID_ROOT/out/tranG81-releases"
+    mkdir -p "$RELEASE_ROOT"
+    if [[ "$DO_SF" == "yes" && -z "$SF_FOLDER" && -t 0 && -r /dev/tty ]]; then
+      sf_pick_folder || DO_SF="no"
+    fi
+    if ! mirror_links; then err "some files were not published"; exit 1; fi
+    if [[ ${#MIRROR_LINKS[@]} -gt 0 ]]; then
+      info "published:"
+      for a in "${MIRROR_LINKS[@]}"; do say "   $a"; done
+    fi
+    exit 0
+  fi
 
   if [[ -z "$VARIANT" && "$REVERT_PATCHES" != "yes" ]]; then
     [[ -t 0 ]] || die "no variant given - use -v user|userdebug|eng"
@@ -1882,6 +2165,11 @@ main() {
     esac
   fi
   [[ "$MIN_FREE_GB" =~ ^[0-9]+$ ]] || { warn "--min-free/MIN_FREE_GB is not a number - using 40"; MIN_FREE_GB=40; }
+
+  if [[ "$DO_SF" == "yes" && -z "$SF_FOLDER" ]]; then
+    if [[ -t 0 && -r /dev/tty ]]; then sf_pick_folder || DO_SF="no"
+    else warn "sourceforge: no --sf-folder given - SourceForge skipped"; DO_SF="no"; fi
+  fi
 
   select_devices "$REQUESTED"
 
@@ -1918,6 +2206,8 @@ main() {
   else
     info "upload   : no"
   fi
+  [[ "$DO_GH" == "yes" ]] && info "github   : $GH_RELEASE_REPO (one release per codename)"
+  [[ "$DO_SF" == "yes" ]] && info "sf       : $SF_PROJECT/$SF_FOLDER (frs.sourceforge.net)"
   [[ "$NO_BUILD" == "yes" ]] && info "build    : skipped (--no-build)"
   [[ -n "$CCACHE_SIZE" ]] && info "ccache   : ${CCACHE_SIZE}"
   [[ -n "$WITH_XGSI_LOGS" ]] && info "xgsi     : boot/dmesg logs on"
@@ -1934,7 +2224,7 @@ main() {
   trap on_interrupt INT TERM HUP
   RUN_START=$(date +%s)
 
-  local entry product devtree vendortree device sysdev radiodir fp nfc log a name rzip
+  local entry product devtree vendortree device sysdev radiodir fp nfc log a name rzip tag
   local idx=0 total=${#SELECTED[@]} t0 dt status mode
   local -a pf
 
@@ -1977,6 +2267,8 @@ main() {
         run_build "$product" "$VARIANT" "$nfc" "$devtree" "$LOG_DIR/$product-$VARIANT-$GMS_MODE.log"
       fi
       say "    -> verify rom, collect zip + $EXTRA_IMAGES, upload each"
+      [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] && \
+        say "    -> mirror each to$([[ "$DO_GH" == yes ]] && printf ' github (%s)' "$GH_RELEASE_REPO")$([[ "$DO_SF" == yes ]] && printf ' sourceforge (%s/%s)' "$SF_PROJECT" "$SF_FOLDER")"
       continue
     fi
 
@@ -2068,6 +2360,16 @@ main() {
       for a in "${COLLECTED[@]}"; do pf+=("$(basename "$a")|||"); done
     fi
 
+    if [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]]; then
+      tag="${product#$ROM_PREFIX}"
+      for a in "${COLLECTED[@]}"; do
+        name="$(basename "$a")"
+        publish_file "$a" "$name" "$tag" \
+          "tranG81 $product $GMS_MODE $VARIANT $sysdev $(date -u +%Y-%m-%dT%H:%MZ)" \
+          || { warn "$product: mirror failed for $name"; FAILED+=("$product [$GMS_MODE] (mirror $name)"); status=failed; }
+      done
+    fi
+
     dt=$(( $(date +%s) - t0 ))
     TIMING+=("$product|$GMS_MODE|$dt|${#COLLECTED[@]}|$status")
     add_json_record "$product" "$GMS_MODE" "$sysdev" "$dt" "$status" "${pf[@]+"${pf[@]}"}"
@@ -2109,10 +2411,12 @@ main() {
   info "artifacts: ${#BUILT[@]}$([[ "$CHECK_ONLY" == yes || "$DRY_RUN" == yes ]] && echo " (nothing changed)")"
   for a in "${BUILT[@]:-}"; do [[ -n "$a" ]] && say "   ${a#$ANDROID_ROOT/}"; done
 
-  if [[ ${#LINKS[@]} -gt 0 ]]; then
-    info "links:"
-    for a in "${LINKS[@]}"; do say "   $a"; done
-    printf '%s\n' "${LINKS[@]}" > "$RELEASE_ROOT/links-$VARIANT-$(date -u +%Y%m%d-%H%M%S).txt"
+  if [[ ${#LINKS[@]} -gt 0 || ${#MIRROR_LINKS[@]} -gt 0 ]]; then
+    local lf="$RELEASE_ROOT/links-$VARIANT-$(date -u +%Y%m%d-%H%M%S).txt"
+    [[ ${#LINKS[@]} -gt 0 ]]        && { info "links:";   for a in "${LINKS[@]}"; do say "   $a"; done; }
+    [[ ${#MIRROR_LINKS[@]} -gt 0 ]] && { info "mirrors:"; for a in "${MIRROR_LINKS[@]}"; do say "   $a"; done; }
+    { [[ ${#LINKS[@]} -gt 0 ]] && printf '%s\n' "${LINKS[@]}"
+      [[ ${#MIRROR_LINKS[@]} -gt 0 ]] && printf '%s\n' "${MIRROR_LINKS[@]}"; } > "$lf"
   fi
 
   if [[ ${#REL_JSON[@]} -gt 0 ]]; then
@@ -2134,7 +2438,7 @@ main() {
     } > "$jf" && info "manifest: ${jf#$ANDROID_ROOT/}"
   fi
 
-  info "total: $(human_time $(( $(date +%s) - RUN_START )))   uploaded: $UPLOADED"
+  info "total: $(human_time $(( $(date +%s) - RUN_START )))   uploaded: $UPLOADED$([[ "$DO_GH" == yes ]] && printf '   github: %s' "$GH_UPLOADED")$([[ "$DO_SF" == yes ]] && printf '   sourceforge: %s' "$SF_UPLOADED")"
 
   if [[ ${#DIRTY[@]} -gt 0 ]]; then
     warn "dirty trees (uncommitted changes): ${DIRTY[*]}"
