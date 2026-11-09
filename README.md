@@ -31,8 +31,8 @@ chmod +x build-all.sh
 # the "github release" / "sourceforge" rows toggle those mirrors and the
 # "sf folder" row (space/enter) opens the SourceForge folder picker; the
 # "no build - links" row opens a paste box: paste the whole download-links
-# block (URLs picked out for you) and it publishes them to the enabled mirrors,
-# grouped per codename, no build.
+# block (the file names come from the block) and it publishes them to the
+# enabled mirrors, grouped per codename, no build.
 # the "rom" row reloads the picked profile's devices and gms menu, so every
 # profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
@@ -120,9 +120,12 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 ./build-all.sh -v user -u yes --gh --sf
 ./build-all.sh -v user --gh --sf --sf-project naze-release --sf-folder releases --gh-repo Transsion-G81/releases
 
-# no build: publish files straight from a past Buzzheavier (or any) link; the
-# codename is read from each file's own name (override with --codename NAME) and
-# the links are grouped per codename.  same as the TUI "no build - links" row.
+# no build: publish files from a past Buzzheavier (or any) link.  paste a whole
+# download-links block and each URL takes the file name of the label line above
+# it (a bare URL list falls back to the name in the link); the codename is read
+# from the file name (override with --codename NAME) and the files are grouped
+# per codename.  a file still in the release dir is reused, else downloaded.
+# same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 
 # bigger/faster: ccache, explicit jobs, extra image (dtbo)

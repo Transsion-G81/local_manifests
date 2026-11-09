@@ -468,8 +468,9 @@ below); the "r" key reverse-applies the patches our device trees drop into the
 source and stops (same as --revert-patches).  The "github release" and
 "sourceforge" rows toggle those mirrors, the "sf folder" row picks the
 SourceForge folder, and the "no build - links" row opens a paste box: paste the
-whole download-links block (the URLs are picked out for you), published to the
-enabled mirrors grouped per codename (same as --mirror).
+whole download-links block (the file names are read from the block, so the
+codename is known), published to the enabled mirrors grouped per codename
+(same as --mirror).
 
 Every ROM is configured and built through its own entry points, taken from its
 profile: lineage, evox, yaap and infinity use lunch + mka, AxionOS uses its own
@@ -504,10 +505,15 @@ Release mirrors (-u stays Buzzheavier):
   GitHub repo) in the config file for later runs.  The folder can also be
   chosen per run from the project's folders or created new; ssh runs in
   BatchMode, so a missing key fails fast.
-  --mirror skips the build: it downloads the given links (e.g. a past Buzzheavier
-  upload), works out each file's codename from its name (--codename overrides),
-  groups them per codename and publishes them to the enabled mirrors, then exits.
-  The TUI's "no build - links" row and the plain menu collect the same links.
+  --mirror skips the build: it publishes the given links (e.g. a past Buzzheavier
+  upload) to the enabled mirrors.  Paste a whole download-links block and each
+  URL takes the file name of the label line above it, so the codename is known;
+  a bare URL list falls back to the name in the link.  A file still sitting in
+  the release dir is reused (no re-download), otherwise it is fetched - the
+  Buzzheavier /download endpoint is used, whose Hx-Redirect header points at the
+  real CDN URL (the page itself is behind a JS challenge).  Files are grouped per
+  codename and published, then it exits.  The TUI's "no build - links" row and
+  the plain menu collect the same links.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
 
@@ -1879,9 +1885,29 @@ tui_edit_lines() {
   printf '\033[2J\033[?25l'
 }
 
-# keep only the http(s) URLs from pasted text, so a whole "download links"
+# turn pasted text into "<name><TAB><url>" pairs, so a whole "download links"
 # block (labels, product headers, indentation and all) can be pasted at once.
-links_only() { grep -oE 'https?://[^[:space:]]+' | sed 's/[,;]*$//'; }
+# A URL takes the file name of the nearest filename-looking line above it (the
+# script's own block lists "[rom] foo-X6531.zip" then the URL), so the codename
+# is known without asking the host.  A plain URL list yields "<TAB><url>" and
+# its name is worked out over the network instead.
+links_parse() {
+  local line f u urls name=""
+  while IFS= read -r line; do
+    urls="$(printf '%s\n' "$line" | grep -oE 'https?://[^[:space:]]+' | sed 's/[,;]*$//')"
+    if [[ -n "$urls" ]]; then
+      while IFS= read -r u; do
+        [[ -n "$u" ]] && printf '%s\t%s\n' "$name" "$u"
+      done <<<"$urls"
+      name=""
+      continue
+    fi
+    f="$(printf '%s\n' "$line" \
+         | grep -oE '[^[:space:]/]+\.(zip|img|apk|tar\.gz|tgz|7z|bin|md5sum|json)' \
+         | tail -n1)"
+    [[ -n "$f" ]] && name="$f"
+  done
+}
 
 # Edit the release links published instead of building (one URL per line).  Same
 # cooked-mode trick as tui_edit_lines; the links are grouped per codename later.
@@ -1897,17 +1923,17 @@ tui_edit_links() {
   else
     printf '  current: (none)\n'
   fi
-  printf '\n  paste the whole download-links block (or one URL per line) - the URLs\n'
-  printf '  are picked out for you; blank line to finish, "-" to clear.\n'
-  printf '  e.g.  https://buzzheavier.com/abc123\n'
-  printf '        https://buzzheavier.com/def456\n\n'
+  printf '\n  paste the whole download-links block (or one URL per line); the file\n'
+  printf '  names are read from the block, blank line to finish, "-" to clear.\n'
+  printf '  e.g.  [rom] foo-X6531.zip\n'
+  printf '        https://buzzheavier.com/abc123\n\n'
   while IFS= read -r l </dev/tty; do
     [[ -z "$l" ]] && break
     typed=1
     [[ "$l" == "-" ]] && { out=""; break; }
     out+="${out:+$'\n'}$l"
   done
-  (( typed )) && TUI_LINKS="$(printf '%s\n' "$out" | links_only)"
+  (( typed )) && TUI_LINKS="$out"
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
   printf '\033[2J\033[?25l'
 }
@@ -1992,7 +2018,8 @@ tui_render() {
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 9)))"
-  if [[ -n "$TUI_LINKS" ]]; then lab="${TUI_LINKS//$'\n'/; }"; (( ${#lab} > 44 )) && lab="${lab:0:41}..."
+  if [[ -n "$TUI_LINKS" ]]; then
+    lab="$(printf '%s\n' "$TUI_LINKS" | links_parse | wc -l | tr -d ' ') link(s)"
   else lab="(none)"; fi
   (( TUI_FOCUS == n + 9 )) && row+="${c_bold}no build - links: $lab${c_reset}" || row+="no build - links: $lab"
   printf '%s\033[K\n' "$row"
@@ -2091,8 +2118,10 @@ tui_run() {
   DO_SF="$TUI_SF"
   if [[ -n "$TUI_LINKS" ]]; then
     MIRROR_URLS=()
-    local _u
-    while IFS= read -r _u; do [[ -n "$_u" ]] && MIRROR_URLS+=("$_u"); done <<<"$TUI_LINKS"
+    local _n _u
+    while IFS=$'\t' read -r _n _u; do
+      [[ -n "$_u" ]] && MIRROR_URLS+=("$_n"$'\t'"$_u")
+    done < <(printf '%s\n' "$TUI_LINKS" | links_parse)
   fi
   [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
   GMS_WANT=("${TUI_GMS_MODES[$TUI_GMS]}")
@@ -2163,14 +2192,14 @@ menu_ask() {
   local nbd="n"; [[ "$NO_BUILD" == "yes" ]] && nbd="y"
   say ""
   info "release links - paste the whole download-links block (or one URL per line), blank to finish"
-  local _l _block=""
+  local _l _block="" _n _u
   while IFS= read -r _l </dev/tty; do
     [[ -z "$_l" ]] && break
     _block+="${_block:+$'\n'}$_l"
   done
-  while IFS= read -r _l; do
-    [[ -n "$_l" ]] && MIRROR_URLS+=("$_l")
-  done < <(printf '%s\n' "$_block" | links_only)
+  while IFS=$'\t' read -r _n _u; do
+    [[ -n "$_u" ]] && MIRROR_URLS+=("$_n"$'\t'"$_u")
+  done < <(printf '%s\n' "$_block" | links_parse)
   if [[ ${#MIRROR_URLS[@]} -eq 0 ]]; then
     [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
   fi
@@ -2296,25 +2325,66 @@ on_interrupt() {
   exit 130
 }
 
-# --mirror URL[,URL...]: no build - fetch files straight from a Buzzheavier (or
-# any) link and publish them to the enabled mirrors.  The codename is read from
-# the file's own name (boot/vendor_boot/zip keep their tag), or forced with
-# --codename NAME.
+# buzzheavier's page sits behind a JS challenge and carries no file name; its
+# /download endpoint answers with a Hx-Redirect header to the CDN URL, which is
+# what a download should use.  Any other link passes through unchanged.
+bh_direct() {
+  local u="$1" base hx scheme rest host
+  case "$u" in
+    *buzzheavier.com/*) ;;
+    *) printf '%s' "$u"; return 0 ;;
+  esac
+  base="${u%%\?*}"; base="${base%/download}"
+  hx="$(curl -fsS -o /dev/null -D - --max-time 30 -H "referer: $base" \
+        -H "hx-current-url: $base" -H "hx-request: true" -H "priority: u=1, i" \
+        "$base/download" 2>/dev/null \
+        | sed -n 's/^[Hh]x-[Rr]edirect:[[:space:]]*//p' | tr -d '\r' | tail -n1)"
+  if [[ -z "$hx" ]]; then
+    hx="$(curl -fsS -o /dev/null -D - --max-time 30 "$base/download" 2>/dev/null \
+          | sed -n 's/^[Ll]ocation:[[:space:]]*//p' | tr -d '\r' | tail -n1)"
+  fi
+  case "$hx" in
+    http*) printf '%s' "$hx" ;;
+    /*) scheme="${u%%://*}"; rest="${u#*://}"; host="${rest%%/*}"; printf '%s://%s%s' "$scheme" "$host" "$hx" ;;
+    *) printf '%s' "$u" ;;
+  esac
+}
+
+# the name of the file behind a link: buzzheavier only exposes it in the
+# Content-Disposition of the CDN response, so ask for the first byte only.
+link_file_name() {
+  local u="$1" d name
+  d="$(bh_direct "$u")"
+  name="$(curl -fsSI --max-time 30 "$d" 2>/dev/null \
+          | sed -n 's/.*[Ff]ilename="*\([^";]*\)"*.*/\1/p' | tail -n1)"
+  [[ -n "$name" ]] || name="$(curl -fsSL -D - -o /dev/null --max-time 30 -r 0-0 "$d" 2>/dev/null \
+          | sed -n 's/.*[Ff]ilename="*\([^";]*\)"*.*/\1/p' | tail -n1)"
+  [[ -n "$name" ]] || name="$(basename "${d%%\?*}")"
+  printf '%s' "$name"
+}
+
+# --mirror / the "no build - links" row: no build - take the given files and
+# publish them to the enabled mirrors, grouped per codename.  Each entry is
+# either "<name><TAB><url>" (name known) or a bare URL (name read from the
+# host).  A file still sitting in the release dir is reused; otherwise it is
+# fetched.  The codename comes from the file name, or is forced with --codename.
 mirror_links() {
-  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" u name tag path cur="" rc=0
+  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src cur="" rc=0
   local -a ents=()
   [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
     || die "--mirror needs a destination: add --gh and/or --sf"
   mkdir -p "$dir" || return 1
-  # 1) resolve each link to a file name + codename and fetch it locally
-  for u in "${MIRROR_URLS[@]}"; do
+  # 1) work out each file's name + codename, then reuse it from the release dir
+  #    when it is still there, else download it
+  for entry in "${MIRROR_URLS[@]}"; do
+    [[ -n "$entry" ]] || continue
+    if [[ "$entry" == *$'\t'* ]]; then name="${entry%%$'\t'*}"; u="${entry#*$'\t'}"
+    else name=""; u="$entry"; fi
     [[ -n "$u" ]] || continue
-    name=""
-    if [[ "$DRY_RUN" != "yes" ]]; then
-      name="$(curl -fsSL -D - -o /dev/null "$u" 2>/dev/null \
-              | sed -n 's/.*[Ff]ilename="*\([^";]*\)"*.*/\1/p' | tail -n1)"
+    if [[ -z "$name" ]]; then
+      if [[ "$DRY_RUN" == "yes" ]]; then name="$(basename "${u%%\?*}")"
+      else name="$(link_file_name "$u")"; fi
     fi
-    [[ -n "$name" ]] || name="$(basename "${u%%\?*}")"
     [[ -n "$name" ]] || { err "cannot tell a file name from $u"; rc=1; continue; }
     tag="$MIRROR_CODENAME"; [[ -n "$tag" ]] || tag="$(codename_of "$name")"
     if [[ -z "$tag" ]]; then
@@ -2325,8 +2395,16 @@ mirror_links() {
     if [[ "$DRY_RUN" == "yes" ]]; then
       say "    curl -fL -o $path $u   (codename $tag)"
     else
-      info "fetching $u -> $name (codename $tag)"
-      curl -fsSL -o "$path" "$u" || { err "download failed: $u"; rc=1; continue; }
+      src="$(find "$RELEASE_ROOT" -type f -name "$name" ! -path "$dir/*" -print -quit 2>/dev/null || true)"
+      if [[ -n "$src" ]]; then
+        path="$src"
+        ok "reuse collected $name"
+      else
+        dl="$(bh_direct "$u")"
+        info "fetching $u -> $name (codename $tag)"
+        curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$path" "$dl" \
+          || { err "download failed: $u"; rc=1; continue; }
+      fi
     fi
     ents+=("$tag|$name|$path")
   done
