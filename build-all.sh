@@ -533,8 +533,9 @@ Options:
       --sf-project NAME              SourceForge project (default naze-release,
                                      https://sourceforge.net/projects/<NAME>/)
       --sf-folder NAME               SourceForge folder under the project; else
-                                     the menu lists them and asks (file-manager
-                                     style, "n" creates a new one)
+                                     the menu walks the tree and asks: a number
+                                     or name opens/creates a subfolder, "b" goes
+                                     back up, "n" uses the current folder
       --setup                        ask once for the GitHub repo and the
                                      SourceForge login/project/folder, make an
                                      SSH key and show the public key to paste
@@ -1669,11 +1670,11 @@ add_json_record() {
 
 ask() { local p="$1" d="$2" a; read -r -p "$p [$d]: " a </dev/tty; printf '%s' "${a:-$d}"; }
 
-# choose the SourceForge folder like a small file manager: walk into a numbered
-# subfolder (or a typed name), "n" makes a subfolder here, ".." goes up and "."
-# uses the current folder.  Writes SF_FOLDER (a path relative to the project).
+# choose the SourceForge folder like a small file manager: a number (or a typed
+# name) opens - and, if new, creates - that subfolder, "b" goes back up and "n"
+# (or Enter) uses the current folder.  Writes SF_FOLDER, relative to the project.
 sf_pick_folder() {
-  local cur="${SF_FOLDER:-}" rel="" choice new i def="n"
+  local cur="${SF_FOLDER:-}" rel="" choice i def=""
   local -a folders=()
   while :; do
     rel="${cur:+$cur/}"
@@ -1682,19 +1683,16 @@ sf_pick_folder() {
     info "SourceForge folder: /home/frs/project/$SF_PROJECT/$rel"
     for i in "${!folders[@]}"; do say "  $((i + 1))) ${folders[$i]}/"; done
     (( ${#folders[@]} )) || say "  (no subfolders here)"
-    say "  n) new subfolder here"
-    def="n"
-    if [[ -n "$cur" ]]; then say "  ..) up a level      .) use this folder"; def="."; fi
-    choice="$(ask "number, name, 'n', '..' or '.'" "$def")"
+    say "  b) back (up a level)"
+    def=""
+    if [[ -n "$cur" ]]; then say "  n) next - use this folder"; def="n"; fi
+    say "  (or type a folder name to open / create it)"
+    choice="$(ask "number, name, 'b' or 'n'" "$def")"
     case "$choice" in
-      .|use)
-        [[ -n "$cur" ]] || { warn "sourceforge: pick or make a folder first"; continue; }
+      n|next)
+        [[ -n "$cur" ]] || { warn "sourceforge: open or name a folder first"; continue; }
         SF_FOLDER="$cur"; break ;;
-      ..|up) if [[ "$cur" == */* ]]; then cur="${cur%/*}"; else cur=""; fi ;;
-      n|N|new)
-        new="$(ask "new subfolder name (under ${cur:-/})" "")"
-        [[ -n "$new" ]] || { warn "sourceforge: no name given"; continue; }
-        cur="${rel}${new}"; ok "will create and use: $SF_PROJECT/$cur" ;;
+      b|back) if [[ "$cur" == */* ]]; then cur="${cur%/*}"; else cur=""; fi ;;
       ''|*[!0-9]*) cur="${rel}${choice}" ;;
       *) i=$((choice - 1))
          if [[ -n "${folders[$i]:-}" ]]; then cur="${rel}${folders[$i]}"
