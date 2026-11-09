@@ -2388,7 +2388,7 @@ index_artifacts() {
 # host).  A file still sitting in the release dir is reused; otherwise it is
 # fetched.  The codename comes from the file name, or is forced with --codename.
 mirror_links() {
-  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src cur="" rc=0
+  local dir="$RELEASE_ROOT/mirror/$(date -u +%Y%m%d-%H%M%S)" entry u dl name tag path src code cur="" rc=0
   local -a ents=()
   [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
     || die "--mirror needs a destination: add --gh and/or --sf"
@@ -2422,15 +2422,15 @@ mirror_links() {
       else
         dl="$(bh_direct "$u")"
         info "fetching $u -> $name (codename $tag)"
-        if ! curl -fsSL --retry 3 --retry-delay 2 -o "$path" "$dl"; then
-          err "download failed: $u"
+        code="$(curl -fsSL --retry 3 --retry-delay 2 -o "$path" -w '%{http_code}' "$dl" 2>/dev/null)" || {
+          err "download failed: $u${code:+ (HTTP $code)}"
           # buzzheavier's download page sits behind a Cloudflare Turnstile, so
           # no CLI fetch can pass it (only a real browser can).  the file must
           # be there from the build - this is the fallback that tells you so.
           [[ "$u" == *buzzheavier.com/* || "$u" == *bzzhr.* ]] \
-            && warn "buzzheavier blocks automated downloads; keep $name in $RELEASE_ROOT (from the build) instead"
+            && warn "buzzheavier blocks automated downloads; keep $name on disk (release dir / build output) or set BUILD_ALL_ARTIFACTS"
           rc=1; continue
-        fi
+        }
       fi
     fi
     ents+=("$tag|$name|$path")
