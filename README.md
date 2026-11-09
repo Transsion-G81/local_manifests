@@ -96,11 +96,14 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 #        no gh CLI, github is skipped with a warning.
 # --sf -> rsync the same files over your SSH key to
 #        frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/
+#        SF_PROJECT defaults to naze-release (https://sourceforge.net/projects/naze-release/);
 #        SF_FOLDER is asked once - it lists the project's folders and "n" creates
-#        a new one (file-manager style) - or pass --sf-folder NAME.  ssh runs in
-#        BatchMode, so set up your SourceForge SSH key first.
+#        a new one (file-manager style) - or pass --sf-folder NAME.  SF_USER is
+#        your SourceForge login (default opekfurina); override with --sf-user
+#        NAME / SF_USER.  ssh runs in BatchMode, so set up your SourceForge SSH
+#        key first.
 ./build-all.sh -v user -u yes --gh --sf
-./build-all.sh -v user --gh --sf --sf-folder releases --gh-repo Transsion-G81/releases
+./build-all.sh -v user --gh --sf --sf-project naze-release --sf-folder releases --gh-repo Transsion-G81/releases
 
 # no build: publish files straight from a past Buzzheavier (or any) link; the
 # codename is read from each file's own name (override with --codename NAME)

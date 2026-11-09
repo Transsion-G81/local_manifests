@@ -51,7 +51,7 @@ BUZZ_FOLDER_ID="${BUZZHEAVIER_FOLDER_ID:-}"
 #     (list, pick or create) and kept in SF_FOLDER.
 GH_RELEASE_REPO="${GH_RELEASE_REPO:-Transsion-G81/releases}"
 SF_USER="${SF_USER:-opekfurina}"
-SF_PROJECT="${SF_PROJECT:-transsion-g81}"
+SF_PROJECT="${SF_PROJECT:-naze-release}"
 SF_HOST="${SF_HOST:-frs.sourceforge.net}"
 SF_FOLDER="${SF_FOLDER:-}"
 DO_GH="no"
@@ -507,6 +507,10 @@ Options:
       --no-sf                        do not publish to SourceForge
       --gh-repo OWNER/REPO           GitHub release repo
                                      (default Transsion-G81/releases)
+      --sf-user NAME                 SourceForge login for ssh/rsync
+                                     (default opekfurina)
+      --sf-project NAME              SourceForge project (default naze-release,
+                                     https://sourceforge.net/projects/<NAME>/)
       --sf-folder NAME               SourceForge folder under the project; else
                                      the menu lists them and asks (file-manager
                                      style, "n" creates a new one)
@@ -545,7 +549,7 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
      GH_RELEASE_REPO (default Transsion-G81/releases)  GH_TOKEN / GITHUB_TOKEN
-     SF_USER (default opekfurina)  SF_PROJECT (default transsion-g81)
+     SF_USER (default opekfurina)  SF_PROJECT (default naze-release)
      SF_HOST (default frs.sourceforge.net)  SF_FOLDER
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
@@ -2021,6 +2025,8 @@ parse_args() {
         ;;
       --no-sf)        DO_SF="no"; shift ;;
       --gh-repo)      GH_RELEASE_REPO="${2:-}"; shift 2 ;;
+      --sf-user)      SF_USER="${2:-}"; shift 2 ;;
+      --sf-project)   SF_PROJECT="${2:-}"; shift 2 ;;
       --sf-folder)    SF_FOLDER="${2:-}"; shift 2 ;;
       --mirror)       IFS=',' read -ra _m <<<"${2:-}"; MIRROR_URLS+=("${_m[@]}"); shift 2 ;;
       --codename)     MIRROR_CODENAME="${2:-}"; shift 2 ;;
