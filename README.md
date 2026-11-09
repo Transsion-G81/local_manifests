@@ -128,10 +128,11 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # from the file name (override with --codename NAME) and the files are grouped
 # per codename.  a file still in the release dir, the build output, or a
 # BUILD_ALL_ARTIFACTS (colon-separated) dir is reused, else downloaded.  a
-# Buzzheavier link is resolved through curl_cffi (one-time: pip install curl_cffi),
-# since its page + /download route answer only a Chrome TLS fingerprint; the
-# signed CDN link it returns is then fetched with plain curl.
-# same as the TUI "no build - links" row.
+# Buzzheavier link is resolved through curl_cffi, since its page + /download
+# route answer only a Chrome TLS fingerprint; the resolver is installed once
+# into BUZZ_PY_LIB (default ~/.local/share/build-all/pylibs) if the system
+# python lacks it, then the signed CDN link it returns is fetched with plain
+# curl.  same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 # ...or point the reuse search at the dir holding your build outputs
 BUILD_ALL_ARTIFACTS="/srv/builds/tranG81-releases" ./build-all.sh --mirror <block pasted> --gh --sf

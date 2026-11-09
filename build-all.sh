@@ -40,6 +40,9 @@ BUZZ_UPLOAD_BASE="${BUZZHEAVIER_UPLOAD_BASE:-https://w.buzzheavier.com}"
 BUZZ_DOWNLOAD_BASE="${BUZZHEAVIER_DOWNLOAD_BASE:-https://buzzheavier.com}"
 BUZZ_ACCOUNT_ID="${BUZZHEAVIER_ACCOUNT_ID:-}"
 BUZZ_FOLDER_ID="${BUZZHEAVIER_FOLDER_ID:-}"
+# curl_cffi supplies the Chrome TLS fingerprint Cloudflare demands on
+# buzzheavier's page + /download route; installed on demand into this dir.
+BUZZ_PY_LIB="${BUZZ_PY_LIB:-${XDG_DATA_HOME:-$HOME/.local/share}/build-all/pylibs}"
 
 # SourceForge/GitHub account settings are remembered here (written by --setup),
 # so the login, project and folder are given only once.  Environment values or
@@ -513,10 +516,10 @@ Release mirrors (-u stays Buzzheavier):
   the release dir, the build output dir, or a BUILD_ALL_ARTIFACTS dir is reused
   (no re-download), otherwise it is fetched.  Buzzheavier's page and /download
   route answer only a Chrome TLS fingerprint, which curl cannot fake, so its
-  links are resolved through curl_cffi (one-time: pip install curl_cffi); the
-  signed CDN link it returns is then fetched with curl.  Files are grouped per
-  codename and published, then it exits.  The TUI's "no build - links" row and
-  the plain menu collect the same links.
+  links are resolved through curl_cffi (installed once into BUZZ_PY_LIB if the
+  system python lacks it); the signed CDN link it returns is then fetched with
+  curl.  Files are grouped per codename and published, then it exits.  The
+  TUI's "no build - links" row and the plain menu collect the same links.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
 
@@ -594,6 +597,8 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      BUILD_ALL_CONFIG (default $HOME/.config/build-all/config; --setup writes it)
      BUILD_ALL_ARTIFACTS (colon-separated extra dirs --mirror searches for a
      file it would otherwise download - e.g. where your build outputs live)
+     BUZZ_PY_LIB (where --mirror installs the buzzheavier resolver; default
+     $HOME/.local/share/build-all/pylibs)
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
@@ -2353,16 +2358,33 @@ on_interrupt() {
   exit 130
 }
 
+# make curl_cffi importable, installing it once into BUZZ_PY_LIB when the system
+# python cannot already import it (skipped under --dry-run, which must not touch
+# anything).  The install note goes to stderr: bh_resolve is read through $( ).
+bh_py_ready() {
+  python3 -c 'import curl_cffi' 2>/dev/null && return 0
+  command -v python3 >/dev/null 2>&1 || return 1
+  if [[ -d "$BUZZ_PY_LIB/curl_cffi" ]]; then
+    export PYTHONPATH="$BUZZ_PY_LIB${PYTHONPATH:+:$PYTHONPATH}"
+    return 0
+  fi
+  [[ "${DRY_RUN:-}" == "yes" ]] && return 1
+  info "buzzheavier: installing the download resolver (curl_cffi) into $BUZZ_PY_LIB" >&2
+  { python3 -m pip install --quiet --target "$BUZZ_PY_LIB" curl_cffi \
+    || pip3 install --quiet --target "$BUZZ_PY_LIB" curl_cffi; } >/dev/null 2>&1 || return 1
+  export PYTHONPATH="$BUZZ_PY_LIB${PYTHONPATH:+:$PYTHONPATH}"
+  python3 -c 'import curl_cffi' 2>/dev/null
+}
+
 # Resolve a Buzzheavier link to its signed CDN URL.  Cloudflare only answers a
 # Chrome TLS fingerprint on the page + /download route, which plain curl cannot
-# fake, so resolve it with curl_cffi (needs python3 and "pip install curl_cffi").
-# The CDN (ts.buzzheavier.com) is open, so the bytes still come down with curl.
+# fake, so resolve it with curl_cffi (auto-installed above if missing).  The CDN
+# (ts.buzzheavier.com) is open, so the bytes still come down with plain curl.
 bh_resolve() {
   local u="$1" base id
   base="${u%%\?*}"; base="${base%/download}"; id="${base##*/}"
   [[ -n "$id" ]] || return 1
-  command -v python3 >/dev/null 2>&1 || return 1
-  python3 -c 'import curl_cffi' >/dev/null 2>&1 || return 1
+  bh_py_ready || return 1
   python3 - "$id" <<'PY' 2>/dev/null
 import re, sys, time
 from curl_cffi import requests
@@ -2481,11 +2503,15 @@ mirror_links() {
         info "fetching $u -> $name (codename $tag)"
         code="$(curl -fsSL --retry 3 --retry-delay 2 -o "$path" -w '%{http_code}' "$dl" 2>/dev/null)" || {
           err "download failed: $u${code:+ (HTTP $code)}"
-          # buzzheavier's download page sits behind a Cloudflare Turnstile, so
-          # no CLI fetch can pass it (only a real browser can).  the file must
-          # be there from the build - this is the fallback that tells you so.
-          [[ "$u" == *buzzheavier.com/* || "$u" == *bzzhr.* ]] \
-            && warn "cannot resolve the buzzheavier link (needs the resolver: pip install curl_cffi); or keep $name on disk (release dir / build output) / set BUILD_ALL_ARTIFACTS"
+          # buzzheavier hides its download behind Cloudflare and only the
+          # curl_cffi resolver passes it; say which of the two cases this is.
+          if [[ "$u" == *buzzheavier.com/* || "$u" == *bzzhr.* ]]; then
+            if python3 -c 'import curl_cffi' 2>/dev/null || [[ -d "$BUZZ_PY_LIB/curl_cffi" ]]; then
+              warn "buzzheavier: could not resolve $name - the link may have expired; keep it on disk (release dir / build output) or set BUILD_ALL_ARTIFACTS"
+            else
+              warn "buzzheavier: its resolver is missing - install it with 'pip3 install --user --break-system-packages curl_cffi'; or keep $name on disk / set BUILD_ALL_ARTIFACTS"
+            fi
+          fi
           rc=1; continue
         }
       fi
