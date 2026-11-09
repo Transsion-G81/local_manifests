@@ -125,9 +125,10 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # it (a bare URL list falls back to the name in the link); the codename is read
 # from the file name (override with --codename NAME) and the files are grouped
 # per codename.  a file still in the release dir, the build output, or a
-# BUILD_ALL_ARTIFACTS (colon-separated) dir is reused, else downloaded -
-# but Buzzheavier downloads sit behind a Cloudflare Turnstile no CLI can pass,
-# so keep the artifacts (or browser-download them into the release dir).
+# BUILD_ALL_ARTIFACTS (colon-separated) dir is reused, else downloaded.  a
+# Buzzheavier link is resolved through curl_cffi (one-time: pip install curl_cffi),
+# since its page + /download route answer only a Chrome TLS fingerprint; the
+# signed CDN link it returns is then fetched with plain curl.
 # same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 # ...or point the reuse search at the dir holding your build outputs

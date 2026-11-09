@@ -510,12 +510,12 @@ Release mirrors (-u stays Buzzheavier):
   URL takes the file name of the label line above it, so the codename is known;
   a bare URL list falls back to the name in the link.  A file still sitting in
   the release dir, the build output dir, or a BUILD_ALL_ARTIFACTS dir is reused
-  (no re-download), otherwise it is fetched.  Note:
-  Buzzheavier serves downloads behind a Cloudflare Turnstile that no CLI client
-  can pass, so its links can only be published when the file is still in the
-  release dir - keep the artifacts, or download them in a browser and drop them
-  in there.  Files are grouped per codename and published, then it exits.  The
-  TUI's "no build - links" row and the plain menu collect the same links.
+  (no re-download), otherwise it is fetched.  Buzzheavier's page and /download
+  route answer only a Chrome TLS fingerprint, which curl cannot fake, so its
+  links are resolved through curl_cffi (one-time: pip install curl_cffi); the
+  signed CDN link it returns is then fetched with curl.  Files are grouped per
+  codename and published, then it exits.  The TUI's "no build - links" row and
+  the plain menu collect the same links.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
 
@@ -2329,15 +2329,47 @@ on_interrupt() {
   exit 130
 }
 
-# buzzheavier's page sits behind a JS challenge and carries no file name; its
-# /download endpoint answers with a Hx-Redirect header to the CDN URL, which is
-# what a download should use.  Any other link passes through unchanged.
+# Resolve a Buzzheavier link to its signed CDN URL.  Cloudflare only answers a
+# Chrome TLS fingerprint on the page + /download route, which plain curl cannot
+# fake, so resolve it with curl_cffi (needs python3 and "pip install curl_cffi").
+# The CDN (ts.buzzheavier.com) is open, so the bytes still come down with curl.
+bh_resolve() {
+  local u="$1" base id
+  base="${u%%\?*}"; base="${base%/download}"; id="${base##*/}"
+  [[ -n "$id" ]] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c 'import curl_cffi' >/dev/null 2>&1 || return 1
+  python3 - "$id" <<'PY' 2>/dev/null
+import re, sys, time
+from curl_cffi import requests
+i = sys.argv[1]
+base = "https://buzzheavier.com/" + i
+h = {"HX-Request": "true", "Referer": "https://buzzheavier.com/f/" + i}
+s = requests.Session(impersonate="chrome")
+for _ in range(3):
+    m = re.search(r"/" + re.escape(i) + r"/download\?t=[^\"&']+", s.get(base, headers=h, timeout=30).text)
+    if m:
+        break
+    time.sleep(2)
+else:
+    sys.exit(3)
+r = s.get("https://buzzheavier.com" + m.group(0), headers=h, timeout=30, allow_redirects=False)
+d = r.headers.get("Hx-Redirect") or r.headers.get("Location")
+if d:
+    print(d)
+PY
+}
+
+# buzzheavier's page sits behind a Cloudflare challenge and carries no file name;
+# its /download endpoint answers with a Hx-Redirect (or Location) to the CDN URL,
+# which is what a download should use.  Any other link passes through unchanged.
 bh_direct() {
   local u="$1" base hx scheme rest host
   case "$u" in
-    *buzzheavier.com/*) ;;
+    *buzzheavier.com/*|*bzzhr.*|*fuckingfast.net/*) ;;
     *) printf '%s' "$u"; return 0 ;;
   esac
+  case "$u" in *"/d/"*) printf '%s' "$u"; return 0 ;; esac   # already resolved
   base="${u%%\?*}"; base="${base%/download}"
   hx="$(curl -fsS -o /dev/null -D - --max-time 30 -H "referer: $base" \
         -H "hx-current-url: $base" -H "hx-request: true" -H "priority: u=1, i" \
@@ -2347,6 +2379,7 @@ bh_direct() {
     hx="$(curl -fsS -o /dev/null -D - --max-time 30 "$base/download" 2>/dev/null \
           | sed -n 's/^[Ll]ocation:[[:space:]]*//p' | tr -d '\r' | tail -n1)"
   fi
+  [[ -n "$hx" ]] || hx="$(bh_resolve "$base" || true)"
   case "$hx" in
     http*) printf '%s' "$hx" ;;
     /*) scheme="${u%%://*}"; rest="${u#*://}"; host="${rest%%/*}"; printf '%s://%s%s' "$scheme" "$host" "$hx" ;;
@@ -2428,7 +2461,7 @@ mirror_links() {
           # no CLI fetch can pass it (only a real browser can).  the file must
           # be there from the build - this is the fallback that tells you so.
           [[ "$u" == *buzzheavier.com/* || "$u" == *bzzhr.* ]] \
-            && warn "buzzheavier blocks automated downloads; keep $name on disk (release dir / build output) or set BUILD_ALL_ARTIFACTS"
+            && warn "cannot resolve the buzzheavier link (needs the resolver: pip install curl_cffi); or keep $name on disk (release dir / build output) / set BUILD_ALL_ARTIFACTS"
           rc=1; continue
         }
       fi
