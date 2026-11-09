@@ -103,10 +103,13 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 #        NAME / SF_USER.  ssh runs in BatchMode, so set up your SourceForge SSH
 #        key first.
 
-# set the account/project/folder once and forget the flags: --setup saves the
-# GitHub repo + SourceForge login/project/folder to
-# $HOME/.config/build-all/config (override with BUILD_ALL_CONFIG), and every
-# later run reads it.  Environment values or flags still win over the file.
+# set the account/project/folder once and forget the flags: --setup makes an
+# SSH keypair (~/.ssh/id_ed25519) if you have none and prints the public key to
+# paste at https://sourceforge.net/auth/shell_services (Me -> Account -> SSH
+# Settings), tests the connection, and saves the GitHub repo + SourceForge
+# login/project/folder to $HOME/.config/build-all/config (override with
+# BUILD_ALL_CONFIG); every later run reads it.  Environment values or flags
+# still win over the file.
 ./build-all.sh --setup
 ./build-all.sh -v user -u yes --gh --sf
 ./build-all.sh -v user --gh --sf --sf-project naze-release --sf-folder releases --gh-repo Transsion-G81/releases

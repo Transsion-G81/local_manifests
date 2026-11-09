@@ -496,10 +496,13 @@ Release mirrors (-u stays Buzzheavier):
   skipped with a warning.
   --sf rsyncs the same files over your SSH key to
   frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/.
-  Run --setup once to remember the SourceForge login, project and folder (and
-  the GitHub repo); they are stored in the config file and reused by later
-  runs.  The folder can also be chosen per run from the project's folders or
-  created new; ssh runs in BatchMode, so a missing key fails fast.
+  Run --setup once: it makes an SSH keypair (~/.ssh/id_ed25519) if you have
+  none, shows the public key to paste at
+  https://sourceforge.net/auth/shell_services (Me -> Account -> SSH Settings),
+  tests the connection, and remembers the login, project and folder (and the
+  GitHub repo) in the config file for later runs.  The folder can also be
+  chosen per run from the project's folders or created new; ssh runs in
+  BatchMode, so a missing key fails fast.
   --mirror skips the build: it downloads the given links (e.g. a past Buzzheavier
   upload), works out each file's codename from its name (--codename overrides)
   and publishes them to the enabled mirrors, then exits.
@@ -533,8 +536,10 @@ Options:
                                      the menu lists them and asks (file-manager
                                      style, "n" creates a new one)
       --setup                        ask once for the GitHub repo and the
-                                     SourceForge login/project/folder and
-                                     remember them in the config file (no build)
+                                     SourceForge login/project/folder, make an
+                                     SSH key and show the public key to paste
+                                     into SourceForge, then remember it all
+                                     in the config file (no build)
       --mirror URL[,URL...]          no build: fetch these links and publish them
                                      to the enabled mirrors
       --codename NAME                codename for --mirror files (else it is read
@@ -1673,6 +1678,31 @@ save_config() {
   ok "saved $CONFIG_FILE"
 }
 
+# make sure an SSH keypair exists (no passphrase - it is used non-interactively)
+# and print the public key so it can be pasted into the SourceForge account.
+setup_ssh_key() {
+  local kpub="" f
+  for f in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub"; do
+    [[ -f "$f" ]] && { kpub="$f"; break; }
+  done
+  if [[ -z "$kpub" ]]; then
+    have ssh-keygen || { warn "ssh-keygen not found - make a key yourself and paste it"; return 1; }
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    ssh-keygen -q -t ed25519 -N "" -C "${SF_USER:-$USER} for sourceforge" -f "$HOME/.ssh/id_ed25519" \
+      || { warn "ssh-keygen failed"; return 1; }
+    kpub="$HOME/.ssh/id_ed25519.pub"
+    ok "generated $HOME/.ssh/id_ed25519 (private key stays here)"
+  else
+    info "using the existing key $kpub"
+  fi
+  say ""
+  info "paste this public key into SourceForge (Me -> Account -> SSH Settings):"
+  say "    https://sourceforge.net/auth/shell_services"
+  say ""
+  sed 's/^/    /' "$kpub"
+  say ""
+}
+
 setup_mirrors() {
   [[ -t 0 && -r /dev/tty ]] || die "--setup needs an interactive terminal"
   say ""
@@ -1682,6 +1712,16 @@ setup_mirrors() {
   SF_USER="$(ask "SourceForge login (the ssh user)" "$SF_USER")"
   SF_PROJECT="$(ask "SourceForge project" "$SF_PROJECT")"
   SF_HOST="$(ask "SourceForge host" "$SF_HOST")"
+  setup_ssh_key
+  if have ssh && [[ -n "$SF_USER" ]] \
+     && [[ "$(ask "test the SourceForge SSH connection now?" "y")" =~ ^[Yy] ]]; then
+    if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+           "$SF_USER@$SF_HOST" true 2>/dev/null; then
+      ok "SourceForge SSH works - key accepted"
+    else
+      warn "SSH to $SF_USER@$SF_HOST failed - paste the key above first"
+    fi
+  fi
   if have ssh && have rsync && [[ -n "$SF_PROJECT" ]]; then
     [[ "$(ask "list and pick the SourceForge folder now?" "y")" =~ ^[Yy] ]] && sf_pick_folder
   else
