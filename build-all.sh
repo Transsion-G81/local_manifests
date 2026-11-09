@@ -509,7 +509,8 @@ Release mirrors (-u stays Buzzheavier):
   upload) to the enabled mirrors.  Paste a whole download-links block and each
   URL takes the file name of the label line above it, so the codename is known;
   a bare URL list falls back to the name in the link.  A file still sitting in
-  the release dir is reused (no re-download), otherwise it is fetched.  Note:
+  the release dir, the build output dir, or a BUILD_ALL_ARTIFACTS dir is reused
+  (no re-download), otherwise it is fetched.  Note:
   Buzzheavier serves downloads behind a Cloudflare Turnstile that no CLI client
   can pass, so its links can only be published when the file is still in the
   release dir - keep the artifacts, or download them in a browser and drop them
@@ -590,6 +591,8 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      SF_USER (default nazephyrus)  SF_PROJECT (default naze-release)
      SF_HOST (default frs.sourceforge.net)  SF_FOLDER
      BUILD_ALL_CONFIG (default $HOME/.config/build-all/config; --setup writes it)
+     BUILD_ALL_ARTIFACTS (colon-separated extra dirs --mirror searches for a
+     file it would otherwise download - e.g. where your build outputs live)
 
 WITH_XGSI_LOGS=true installs the XGSI boot/dmesg log capture scripts into the
 rom (the menu has a checkbox for it).  It is read from device.mk at
@@ -2364,6 +2367,21 @@ link_file_name() {
   printf '%s' "$name"
 }
 
+# index the already-collected artifacts once, so a link whose file is still on
+# disk (release dir, raw build output, or BUILD_ALL_ARTIFACTS) is not re-fetched.
+index_artifacts() {
+  local d f b extra="${BUILD_ALL_ARTIFACTS:-}"
+  declare -gA ARTIFACT=()
+  for d in "$RELEASE_ROOT" "${ANDROID_ROOT:-}/out/target/product" ${extra//:/ }; do
+    [[ -n "$d" && -d "$d" ]] || continue
+    while IFS= read -r f; do
+      b="${f##*/}"
+      [[ -n "${ARTIFACT[$b]:-}" ]] || ARTIFACT[$b]="$f"
+    done < <(find "$d" -type f \( -name '*.zip' -o -name '*.img' \) \
+                  ! -path "$RELEASE_ROOT/mirror/*" 2>/dev/null)
+  done
+}
+
 # --mirror / the "no build - links" row: no build - take the given files and
 # publish them to the enabled mirrors, grouped per codename.  Each entry is
 # either "<name><TAB><url>" (name known) or a bare URL (name read from the
@@ -2375,6 +2393,7 @@ mirror_links() {
   [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] \
     || die "--mirror needs a destination: add --gh and/or --sf"
   mkdir -p "$dir" || return 1
+  [[ "$DRY_RUN" == "yes" ]] || index_artifacts
   # 1) work out each file's name + codename, then reuse it from the release dir
   #    when it is still there, else download it
   for entry in "${MIRROR_URLS[@]}"; do
@@ -2396,7 +2415,7 @@ mirror_links() {
     if [[ "$DRY_RUN" == "yes" ]]; then
       say "    curl -fL -o $path $u   (codename $tag)"
     else
-      src="$(find "$RELEASE_ROOT" -type f -name "$name" ! -path "$dir/*" -print -quit 2>/dev/null || true)"
+      src="${ARTIFACT[$name]:-}"
       if [[ -n "$src" ]]; then
         path="$src"
         ok "reuse collected $name"

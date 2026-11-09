@@ -124,11 +124,14 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # download-links block and each URL takes the file name of the label line above
 # it (a bare URL list falls back to the name in the link); the codename is read
 # from the file name (override with --codename NAME) and the files are grouped
-# per codename.  a file still in the release dir is reused, else downloaded -
+# per codename.  a file still in the release dir, the build output, or a
+# BUILD_ALL_ARTIFACTS (colon-separated) dir is reused, else downloaded -
 # but Buzzheavier downloads sit behind a Cloudflare Turnstile no CLI can pass,
 # so keep the artifacts (or browser-download them into the release dir).
 # same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
+# ...or point the reuse search at the dir holding your build outputs
+BUILD_ALL_ARTIFACTS="/srv/builds/tranG81-releases" ./build-all.sh --mirror <block pasted> --gh --sf
 
 # bigger/faster: ccache, explicit jobs, extra image (dtbo)
 CCACHE_SIZE=50G ./build-all.sh -v userdebug -u yes --jobs 16
