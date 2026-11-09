@@ -30,8 +30,9 @@ chmod +x build-all.sh
 # extra make lines, r reverts our tree patches and stops, enter starts, q quits.
 # the "github release" / "sourceforge" rows toggle those mirrors and the
 # "sf folder" row (space/enter) opens the SourceForge folder picker; the
-# "no build - links" row opens a paste box (one release link per line) and
-# publishes them to the enabled mirrors, grouped per codename, no build.
+# "no build - links" row opens a paste box: paste the whole download-links
+# block (URLs picked out for you) and it publishes them to the enabled mirrors,
+# grouped per codename, no build.
 # the "rom" row reloads the picked profile's devices and gms menu, so every
 # profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a

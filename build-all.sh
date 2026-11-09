@@ -467,9 +467,9 @@ makefile (bottom of the file, for the build only - see PRODUCT_EXTRA_LINES
 below); the "r" key reverse-applies the patches our device trees drop into the
 source and stops (same as --revert-patches).  The "github release" and
 "sourceforge" rows toggle those mirrors, the "sf folder" row picks the
-SourceForge folder, and the "no build - links" row opens a paste box: one
-release link per line, published to the enabled mirrors grouped per codename
-(same as --mirror).
+SourceForge folder, and the "no build - links" row opens a paste box: paste the
+whole download-links block (the URLs are picked out for you), published to the
+enabled mirrors grouped per codename (same as --mirror).
 
 Every ROM is configured and built through its own entry points, taken from its
 profile: lineage, evox, yaap and infinity use lunch + mka, AxionOS uses its own
@@ -1879,6 +1879,10 @@ tui_edit_lines() {
   printf '\033[2J\033[?25l'
 }
 
+# keep only the http(s) URLs from pasted text, so a whole "download links"
+# block (labels, product headers, indentation and all) can be pasted at once.
+links_only() { grep -oE 'https?://[^[:space:]]+' | sed 's/[,;]*$//'; }
+
 # Edit the release links published instead of building (one URL per line).  Same
 # cooked-mode trick as tui_edit_lines; the links are grouped per codename later.
 tui_edit_links() {
@@ -1893,7 +1897,8 @@ tui_edit_links() {
   else
     printf '  current: (none)\n'
   fi
-  printf '\n  type one link per line, blank line to finish, "-" to clear.\n'
+  printf '\n  paste the whole download-links block (or one URL per line) - the URLs\n'
+  printf '  are picked out for you; blank line to finish, "-" to clear.\n'
   printf '  e.g.  https://buzzheavier.com/abc123\n'
   printf '        https://buzzheavier.com/def456\n\n'
   while IFS= read -r l </dev/tty; do
@@ -1902,7 +1907,7 @@ tui_edit_links() {
     [[ "$l" == "-" ]] && { out=""; break; }
     out+="${out:+$'\n'}$l"
   done
-  (( typed )) && TUI_LINKS="$out"
+  (( typed )) && TUI_LINKS="$(printf '%s\n' "$out" | links_only)"
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
   printf '\033[2J\033[?25l'
 }
@@ -2157,12 +2162,15 @@ menu_ask() {
 
   local nbd="n"; [[ "$NO_BUILD" == "yes" ]] && nbd="y"
   say ""
-  info "release links (one per line, blank to finish) - publish these instead of building"
-  local _l
+  info "release links - paste the whole download-links block (or one URL per line), blank to finish"
+  local _l _block=""
   while IFS= read -r _l </dev/tty; do
     [[ -z "$_l" ]] && break
-    MIRROR_URLS+=("$_l")
+    _block+="${_block:+$'\n'}$_l"
   done
+  while IFS= read -r _l; do
+    [[ -n "$_l" ]] && MIRROR_URLS+=("$_l")
+  done < <(printf '%s\n' "$_block" | links_only)
   if [[ ${#MIRROR_URLS[@]} -eq 0 ]]; then
     [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
   fi
