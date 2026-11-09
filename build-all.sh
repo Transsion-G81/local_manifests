@@ -558,7 +558,9 @@ Options:
                                      SSH key and show the public key to paste
                                      into SourceForge, then remember it all
                                      in the config file (no build)
-      --mirror URL[,URL...]          no build: fetch these links and publish them
+      --mirror BLOCK                 no build: fetch these links and publish them.
+                                     give the whole pasted download-links block
+                                     (or a comma-separated URL list)
                                      to the enabled mirrors
       --codename NAME                codename for --mirror files (else it is read
                                      from the file's own name)
@@ -2153,8 +2155,9 @@ tui_run() {
   DO_SF="$TUI_SF"
   if [[ -n "$TUI_LINKS" ]]; then
     MIRROR_URLS=()
-    local _n _u
-    while IFS=$'\t' read -r _n _u; do
+    local _n _u _ln
+    while IFS= read -r _ln; do
+      _n="${_ln%%$'\t'*}"; _u="${_ln#*$'\t'}"
       [[ -n "$_u" ]] && MIRROR_URLS+=("$_n"$'\t'"$_u")
     done < <(printf '%s\n' "$TUI_LINKS" | links_parse)
   fi
@@ -2227,12 +2230,13 @@ menu_ask() {
   local nbd="n"; [[ "$NO_BUILD" == "yes" ]] && nbd="y"
   say ""
   info "release links - paste the whole download-links block (or one URL per line), blank to finish"
-  local _l _block="" _n _u
+  local _l _block="" _n _u _ln
   while IFS= read -r _l </dev/tty; do
     [[ -z "$_l" ]] && break
     _block+="${_block:+$'\n'}$_l"
   done
-  while IFS=$'\t' read -r _n _u; do
+  while IFS= read -r _ln; do
+    _n="${_ln%%$'\t'*}"; _u="${_ln#*$'\t'}"
     [[ -n "$_u" ]] && MIRROR_URLS+=("$_n"$'\t'"$_u")
   done < <(printf '%s\n' "$_block" | links_parse)
   if [[ ${#MIRROR_URLS[@]} -eq 0 ]]; then
@@ -2277,7 +2281,22 @@ parse_args() {
       --sf-project)   SF_PROJECT="${2:-}"; shift 2 ;;
       --sf-folder)    SF_FOLDER="${2:-}"; shift 2 ;;
       --setup)        SETUP="yes"; shift ;;
-      --mirror)       IFS=',' read -ra _m <<<"${2:-}"; MIRROR_URLS+=("${_m[@]}"); shift 2 ;;
+      --mirror)
+        # either a comma-separated list, or a whole pasted download-links block
+        # (a label line above its URL line) - links_parse reads the latter.
+        _m="${2:-}"
+        if [[ "$_m" == *$'\n'* ]]; then
+          local _n _u _ln
+          # split on the tab by hand: `IFS=$'\t' read` would eat a leading tab
+          # when the name is empty (a bare URL line), silently dropping it.
+          while IFS= read -r _ln; do
+            _n="${_ln%%$'\t'*}"; _u="${_ln#*$'\t'}"
+            [[ -n "$_u" ]] && MIRROR_URLS+=("$_n"$'\t'"$_u")
+          done < <(printf '%s\n' "$_m" | links_parse)
+        else
+          IFS=',' read -ra _ml <<<"$_m"; MIRROR_URLS+=("${_ml[@]}")
+        fi
+        shift 2 ;;
       --codename)     MIRROR_CODENAME="${2:-}"; shift 2 ;;
       -a|--account)   BUZZ_ACCOUNT_ID="${2:-}"; shift 2 ;;
       --folder)       BUZZ_FOLDER_ID="${2:-}"; shift 2 ;;

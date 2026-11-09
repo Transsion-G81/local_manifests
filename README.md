@@ -137,8 +137,10 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # this: with no ANDROID_ROOT the release dir is ~/tranG81-releases.
 # same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
+# ...or paste the whole download-links block (a file-name line above its URL)
+./build-all.sh --mirror '<block pasted>' --gh --sf
 # ...or point the reuse search at the dir holding your build outputs
-BUILD_ALL_ARTIFACTS="/srv/builds/tranG81-releases" ./build-all.sh --mirror <block pasted> --gh --sf
+BUILD_ALL_ARTIFACTS="/srv/builds/tranG81-releases" ./build-all.sh --mirror '<block pasted>' --gh --sf
 
 # bigger/faster: ccache, explicit jobs, extra image (dtbo)
 CCACHE_SIZE=50G ./build-all.sh -v userdebug -u yes --jobs 16
