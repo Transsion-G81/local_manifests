@@ -449,7 +449,10 @@ that profile's devices and GMS menu, so e.g. AxionOS can be built from the menu
 alone; the "make lines" row edits the lines a ROM profile appends to the product
 makefile (bottom of the file, for the build only - see PRODUCT_EXTRA_LINES
 below); the "r" key reverse-applies the patches our device trees drop into the
-source and stops (same as --revert-patches).
+source and stops (same as --revert-patches).  The "github release" and
+"sourceforge" rows toggle those mirrors, the "sf folder" row picks the
+SourceForge folder, and the "no build" row re-uploads already-collected
+artifacts (same as --no-build).
 
 Every ROM is configured and built through its own entry points, taken from its
 profile: lineage, evox, yaap and infinity use lunch + mka, AxionOS uses its own
@@ -1636,6 +1639,7 @@ TUI_VARIANT="user"
 TUI_UPLOAD="yes"
 TUI_GH="no"
 TUI_SF="no"
+TUI_NOBUILD="no"
 TUI_XGSI="no"
 TUI_GMS=0
 TUI_STATUS=""
@@ -1815,6 +1819,11 @@ tui_render() {
   row="$(tui_mark $((n + 8)))"
   (( TUI_FOCUS == n + 8 )) && row+="${c_bold}sf folder: ${SF_FOLDER:-<pick>}${c_reset}" || row+="sf folder: ${SF_FOLDER:-<pick>}"
   printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 9)))"
+  [[ "$TUI_NOBUILD" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 9 )) && row+="${c_bold}no build (upload what is already collected)${c_reset}" || row+="no build (upload what is already collected)"
+  printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
   printf '   %sup/down%s move   %sspace%s toggle   %sleft/right%s rom/variant/gms   %sa%s all   %sn%s none\033[K\n' \
@@ -1829,6 +1838,7 @@ tui_run() {
   local n=${#DEVICES[@]} i key short req="" all=1 any
   TUI_FOCUS=0; TUI_STATUS=""; TUI_UPLOAD="yes"; TUI_GMS=0; REVERT_PATCHES="no"
   TUI_GH="$DO_GH"; TUI_SF="$DO_SF"
+  [[ "$NO_BUILD" == "yes" ]] && TUI_NOBUILD="yes" || TUI_NOBUILD="no"
   TUI_ROM=0
   for i in "${!ROMS[@]}"; do [[ "${ROMS[$i]}" == "$ROM" ]] && TUI_ROM=$i; done
   TUI_SEL=()
@@ -1848,7 +1858,7 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 8 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 9 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
         if   (( TUI_FOCUS == 0 ));     then tui_cycle_rom "$key"
         elif (( TUI_FOCUS == 1 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
@@ -1866,6 +1876,7 @@ tui_run() {
         elif (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"
         elif (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"
         elif (( TUI_FOCUS == n + 8 )); then tui_sf_folder
+        elif (( TUI_FOCUS == n + 9 )); then [[ "$TUI_NOBUILD" == yes ]] && TUI_NOBUILD="no" || TUI_NOBUILD="yes"
         else TUI_SEL[TUI_FOCUS - 2]=$((1 - TUI_SEL[TUI_FOCUS - 2]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
@@ -1885,6 +1896,7 @@ tui_run() {
         if (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"; tui_render; continue; fi
         if (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"; tui_render; continue; fi
         if (( TUI_FOCUS == n + 8 )); then tui_sf_folder; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 9 )); then [[ "$TUI_NOBUILD" == yes ]] && TUI_NOBUILD="no" || TUI_NOBUILD="yes"; tui_render; continue; fi
         any=0
         for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
         if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
@@ -1905,6 +1917,7 @@ tui_run() {
   DO_UPLOAD="$TUI_UPLOAD"
   DO_GH="$TUI_GH"
   DO_SF="$TUI_SF"
+  [[ "$TUI_NOBUILD" == "yes" ]] && NO_BUILD="yes" || NO_BUILD="no"
   [[ "$TUI_XGSI" == "yes" ]] && WITH_XGSI_LOGS="true" || WITH_XGSI_LOGS=""
   GMS_WANT=("${TUI_GMS_MODES[$TUI_GMS]}")
   PRODUCT_EXTRA_LINES="$TUI_LINES"
@@ -1970,6 +1983,9 @@ menu_ask() {
 
   say ""
   PRODUCT_EXTRA_LINES="$(ask "make lines to append to the product makefile (blank = keep)" "$PRODUCT_EXTRA_LINES")"
+
+  local nbd="n"; [[ "$NO_BUILD" == "yes" ]] && nbd="y"
+  [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
 }
 
 interactive_menu() {

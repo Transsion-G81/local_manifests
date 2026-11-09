@@ -29,7 +29,8 @@ chmod +x build-all.sh
 # xgsi, g cycles the gms set, e (or enter on the "make lines" row) edits the
 # extra make lines, r reverts our tree patches and stops, enter starts, q quits.
 # the "github release" / "sourceforge" rows toggle those mirrors and the
-# "sf folder" row (space/enter) opens the SourceForge folder picker.
+# "sf folder" row (space/enter) opens the SourceForge folder picker; the
+# "no build" row re-uploads already-collected artifacts instead of building.
 # the "rom" row reloads the picked profile's devices and gms menu, so every
 # profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
