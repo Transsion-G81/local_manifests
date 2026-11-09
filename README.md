@@ -97,8 +97,10 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # --sf -> rsync the same files over your SSH key to
 #        frs.sourceforge.net:/home/frs/project/<SF_PROJECT>/<SF_FOLDER>/<codename>/
 #        SF_PROJECT defaults to naze-release (https://sourceforge.net/projects/naze-release/);
-#        SF_FOLDER is asked once - it lists the project's folders and "n" creates
-#        a new one (file-manager style) - or pass --sf-folder NAME.  SF_USER is
+#        SF_FOLDER is asked once like a small file manager: a number walks into
+#        a subfolder, a typed name makes one, "n" makes a subfolder here and
+#        ".." goes up.  The result is a path (e.g. cusrom/releases); pass
+#        --sf-folder NAME to skip the prompt.  SF_USER is
 #        your SourceForge login (default nazephyrus); override with --sf-user
 #        NAME / SF_USER.  The FRS login is a copy-only shell, so folders are
 #        listed/created over sftp and files sent with rsync; both run in

@@ -1146,13 +1146,12 @@ publish_file() {
   return "$rc"
 }
 
-# list the project's SourceForge folders (its FRS root) over sftp, minus the
-# web tree.  -1 prints bare names; the sed trims any path prefix/whitespace.
-sf_list_folders() {
-  printf 'ls -1 /home/frs/project/%s\n' "$SF_PROJECT" \
+# list the subfolders (directories only - files are dropped) of an absolute FRS
+# path over sftp.  "ls -l" marks dirs with a leading 'd'; $NF is the name.
+sf_list_dir() {
+  printf 'ls -l %s\n' "$1" \
     | sftp "${SF_SSH_OPTS[@]}" -q -b - "$SF_USER@$SF_HOST" 2>/dev/null \
-    | sed -e 's#[[:space:]]*$##' -e 's#.*/##' -e 's#^[[:space:]]*##' \
-    | grep -vE '^(htdocs|\.|Connected|sftp)' | grep -v '^$'
+    | awk '$1 ~ /^d/ {print $NF}'
 }
 
 # POST a one-line status to a Discord/Slack webhook or a Telegram chat (best
@@ -1670,27 +1669,38 @@ add_json_record() {
 
 ask() { local p="$1" d="$2" a; read -r -p "$p [$d]: " a </dev/tty; printf '%s' "${a:-$d}"; }
 
-# choose the SourceForge folder interactively: list the project's folders, pick
-# one by number or name, or "n" to create a new one.  Writes SF_FOLDER.
+# choose the SourceForge folder like a small file manager: walk into a numbered
+# subfolder (or a typed name), "n" makes a subfolder here, ".." goes up and "."
+# uses the current folder.  Writes SF_FOLDER (a path relative to the project).
 sf_pick_folder() {
-  local -a folders=(); local i choice new
-  mapfile -t folders < <(sf_list_folders)
-  say ""
-  info "SourceForge folder under /home/frs/project/$SF_PROJECT"
-  for i in "${!folders[@]}"; do say "  $((i + 1))) ${folders[$i]}"; done
-  (( ${#folders[@]} )) || say "  (none found - check your SourceForge SSH key, or name a new folder)"
-  say "  n) new folder"
-  choice="$(ask "folder number, name, or n" "${SF_FOLDER:-n}")"
-  case "$choice" in
-    n|N|new)
-      new="$(ask "new folder name" "${SF_FOLDER:-}")"
-      [[ -n "$new" ]] || { warn "sourceforge: no folder name given"; return 1; }
-      SF_FOLDER="$new" ;;
-    ''|*[!0-9]*) SF_FOLDER="$choice" ;;
-    *) i=$((choice - 1))
-       if [[ -n "${folders[$i]:-}" ]]; then SF_FOLDER="${folders[$i]}"
-       else warn "sourceforge: no folder $choice"; return 1; fi ;;
-  esac
+  local cur="${SF_FOLDER:-}" rel="" choice new i def="n"
+  local -a folders=()
+  while :; do
+    rel="${cur:+$cur/}"
+    mapfile -t folders < <(sf_list_dir "/home/frs/project/$SF_PROJECT/$rel")
+    say ""
+    info "SourceForge folder: /home/frs/project/$SF_PROJECT/$rel"
+    for i in "${!folders[@]}"; do say "  $((i + 1))) ${folders[$i]}/"; done
+    (( ${#folders[@]} )) || say "  (no subfolders here)"
+    say "  n) new subfolder here"
+    def="n"
+    if [[ -n "$cur" ]]; then say "  ..) up a level      .) use this folder"; def="."; fi
+    choice="$(ask "number, name, 'n', '..' or '.'" "$def")"
+    case "$choice" in
+      .|use)
+        [[ -n "$cur" ]] || { warn "sourceforge: pick or make a folder first"; continue; }
+        SF_FOLDER="$cur"; break ;;
+      ..|up) if [[ "$cur" == */* ]]; then cur="${cur%/*}"; else cur=""; fi ;;
+      n|N|new)
+        new="$(ask "new subfolder name (under ${cur:-/})" "")"
+        [[ -n "$new" ]] || { warn "sourceforge: no name given"; continue; }
+        cur="${rel}${new}"; ok "will create and use: $SF_PROJECT/$cur" ;;
+      ''|*[!0-9]*) cur="${rel}${choice}" ;;
+      *) i=$((choice - 1))
+         if [[ -n "${folders[$i]:-}" ]]; then cur="${rel}${folders[$i]}"
+         else warn "sourceforge: no folder $choice"; fi ;;
+    esac
+  done
   ok "sourceforge folder: $SF_FOLDER"
 }
 
