@@ -540,7 +540,8 @@ Options:
                                      titled "NAME <codename>" with tag
                                      "<slugged NAME>-<codename>" (default: the --rom
                                      profile; empty -> the bare codename)
-  -v, --variant user|userdebug|eng   build variant (default: interactive TUI)
+  -v, --variant user|userdebug|eng   build variant (default: interactive TUI;
+                                     a microG pass forces userdebug)
       --release NAME                 lunch release config (e.g. bp4a); default
                                      reads the ROM's release pin (if it has one)
   -d, --devices LIST                 all | X6531,X6531B,X6532,KL5,KL5n
@@ -635,8 +636,9 @@ Each mode builds only its own pass, so "gapps" is a single GApps build and does
 not build vanilla first; pick "vanilla+gapps" or "all" to build several passes
 in one run (the menu's GMS row has the same choices).  LineageOS uses our
 device.mk gate: gapps bakes MindTheGapps (vendor/gapps) and microg bakes microG
-(vendor/partner_gms - LineageOS already ships microG-only signature spoofing, so
-no frameworks patch is needed).  Other ROMs are probed: if the tree ships a
+(vendor/partner_gms - LineageOS already ships microG-only signature spoofing so
+no frameworks patch is needed, but it only spoofs on a debuggable build, so a
+microg pass forces the variant to userdebug).  Other ROMs are probed: if the tree ships a
 GApps and/or microG payload (and exposes a switch for it), that mode is offered
 and the ROM's own switch is used - nothing per-ROM is hardcoded.  gapps and
 microG are mutually exclusive.  The product out dir is cleared when the mode
@@ -2763,6 +2765,15 @@ main() {
   # fold --gms/env into the fixed vanilla -> gapps -> microg build order.
   [[ ${#GMS_WANT[@]} -gt 0 ]] || GMS_WANT=("$GMS_MODES")
   normalize_gms "${GMS_WANT[@]+"${GMS_WANT[@]}"}"
+
+  # microG only gets its signature spoofed on a debuggable build (frameworks
+  # MicrogUtils.isMicrogSigned -> isDebuggable), so a user build would ship a
+  # microG that Play-dependent apps reject.  Bump the whole run rather than
+  # build it broken.
+  if [[ "$NO_BUILD" != "yes" && "$VARIANT" == "user" && " ${GMS_MODE_LIST[*]} " == *" microg "* ]]; then
+    warn "microG needs a debuggable build (no signature spoofing on user) - using userdebug"
+    VARIANT="userdebug"
+  fi
 
   RELEASE_ROOT="$ANDROID_ROOT/out/tranG81-releases"
   LOG_DIR="$ANDROID_ROOT/out/tranG81-logs"

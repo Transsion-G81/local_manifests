@@ -52,13 +52,14 @@ WITH_XGSI_LOGS=true ./build-all.sh -v userdebug -u yes
 # vanilla -> gapps -> microg (microG last), all of a device's modes before the
 # next device.  vanilla is stock LineageOS; gapps
 # bakes MindTheGapps (vendor/gapps); microg bakes microG (vendor/partner_gms,
-# LineageOS already ships microG-only signature spoofing).  Each mode builds
+# LineageOS already ships microG-only signature spoofing, but only on a
+# debuggable build, so a microg pass forces the variant to userdebug).  Each mode builds
 # only its own pass, so "gapps" alone does not build vanilla first - pick a
 # combo to build several in one run.  gapps and microG are mutually exclusive.
 ./build-all.sh -v user -u yes --gms gapps          # gapps only
-./build-all.sh -v user -u yes --gms microg         # microG only
+./build-all.sh -v userdebug -u yes --gms microg    # microG only
 ./build-all.sh -v user -u yes --gms vanilla+gapps  # vanilla + gapps
-./build-all.sh -v user -u yes --gms all            # vanilla + gapps + microG
+./build-all.sh -v userdebug -u yes --gms all       # vanilla + gapps + microG
 # --gapps / --microg are shorthands for --gms gapps / --gms microg; the menu's
 # gms row offers the same set (vanilla / gapps / microg / vanilla+gapps / all).
 # gapps/microG are read from device.mk at product-config time, so the product
