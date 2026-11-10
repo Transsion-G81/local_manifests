@@ -119,10 +119,12 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 #        listed/created over sftp and files sent with rsync; both run in
 #        BatchMode, so set up your SourceForge SSH key first (see --setup).
 
-# set the account/project/folder once and forget the flags: --setup makes an
+# set the account/project/folder/release name once and forget the flags:
+# --setup makes an
 # SSH keypair (~/.ssh/id_ed25519) if you have none and prints the public key to
 # paste at https://sourceforge.net/auth/shell_services (Me -> Account -> SSH
-# Settings), tests the connection, and saves the GitHub repo + SourceForge
+# Settings), tests the connection, and saves the GitHub repo + release name +
+# SourceForge
 # login/project/folder to $HOME/.config/build-all/config (override with
 # BUILD_ALL_CONFIG); every later run reads it.  Environment values or flags
 # still win over the file.

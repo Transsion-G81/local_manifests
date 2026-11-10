@@ -52,7 +52,7 @@ if [[ -r "$CONFIG_FILE" ]]; then
   while IFS= read -r _line; do
     _line="${_line%$'\r'}"
     _k="${_line%%=*}"; _v="${_line#*=}"
-    case " GH_RELEASE_REPO SF_USER SF_PROJECT SF_HOST SF_FOLDER " in
+    case " GH_RELEASE_REPO SF_USER SF_PROJECT SF_HOST SF_FOLDER RELEASE_NAME " in
       *" $_k "*) [[ -z "${!_k+x}" ]] && printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$CONFIG_FILE"
@@ -563,8 +563,9 @@ Options:
                                      the menu walks the tree and asks: a number
                                      or name opens/creates a subfolder, "b" goes
                                      back up, "n" uses the current folder
-      --setup                        ask once for the GitHub repo and the
-                                     SourceForge login/project/folder, make an
+      --setup                        ask once for the GitHub repo, the release
+                                     name and the SourceForge
+                                     login/project/folder, make an
                                      SSH key and show the public key to paste
                                      into SourceForge, then remember it all
                                      in the config file (no build)
@@ -604,7 +605,8 @@ Env: ANDROID_ROOT  BUZZHEAVIER_ACCOUNT_ID  BUZZHEAVIER_FOLDER_ID  JOBS  CCACHE_S
      overrides it per device, e.g. PRODUCT_EXTRA_LINES_X6532)
      TELEGRAM_BOT_TOKEN  TELEGRAM_CHAT_ID  (notify via Telegram)
      EXTRA_IMAGES (default: boot.img vendor_boot.img; add dtbo.img here)
-     GH_RELEASE_REPO (default Transsion-G81/release)  GH_TOKEN / GITHUB_TOKEN
+     GH_RELEASE_REPO (default Transsion-G81/release)  RELEASE_NAME
+     GH_TOKEN / GITHUB_TOKEN
      SF_USER (default nazephyrus)  SF_PROJECT (default naze-release)
      SF_HOST (default frs.sourceforge.net)  SF_FOLDER
      BUILD_ALL_CONFIG (default $HOME/.config/build-all/config; --setup writes it)
@@ -1787,6 +1789,7 @@ save_config() {
     printf 'SF_PROJECT=%s\n' "$SF_PROJECT"
     printf 'SF_HOST=%s\n' "$SF_HOST"
     [[ -n "$SF_FOLDER" ]] && printf 'SF_FOLDER=%s\n' "$SF_FOLDER"
+    [[ -n "$RELEASE_NAME" ]] && printf 'RELEASE_NAME=%s\n' "$RELEASE_NAME"
   } > "$CONFIG_FILE" || die "cannot write $CONFIG_FILE"
   ok "saved $CONFIG_FILE"
 }
@@ -1825,6 +1828,7 @@ setup_mirrors() {
   SF_USER="$(ask "SourceForge login (the ssh user)" "$SF_USER")"
   SF_PROJECT="$(ask "SourceForge project" "$SF_PROJECT")"
   SF_HOST="$(ask "SourceForge host" "$SF_HOST")"
+  RELEASE_NAME="$(ask "release name - github title prefix, blank = the rom profile" "$RELEASE_NAME")"
   setup_ssh_key
   if have ssh && [[ -n "$SF_USER" ]] \
      && [[ "$(ask "test the SourceForge SSH connection now?" "y")" =~ ^[Yy] ]]; then
