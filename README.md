@@ -28,11 +28,12 @@ chmod +x build-all.sh
 # the rom / the variant / the gms set, a/n select all/none devices, x toggles
 # xgsi, g cycles the gms set, e (or enter on the "make lines" row) edits the
 # extra make lines, r reverts our tree patches and stops, enter starts, q quits.
-# the "github release" / "sourceforge" rows toggle those mirrors and the
+# the "github release" / "sourceforge" rows toggle those mirrors, the
+# "release name" row types the prefix of every github release title, and the
 # "sf folder" row (space/enter) opens the SourceForge folder picker; the
 # "no build - links" row opens a paste box: paste the whole download-links
-# block (the file names come from the block) and it publishes them to the
-# enabled mirrors, grouped per codename, no build.
+# block (the file names come from the block) and, as soon as the paste ends, it
+# publishes them to the enabled mirrors, grouped per codename, no build.
 # the "rom" row reloads the picked profile's devices and gms menu, so every
 # profile (including axion) can be built from the menu alone - same as --rom.
 # nothing has to be installed - no dialog, whiptail or fzf.  without a
@@ -90,8 +91,13 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 ./build-all.sh -v userdebug -u yes -a <account_id>
 
 # also publish to GitHub Releases and/or SourceForge (Buzzheavier stays on -u)
-# --gh -> one release per codename (tag and name = X6531/X6531B/X6532/KL5/KL5n)
-#        in GH_RELEASE_REPO (default Transsion-G81/release).  The rom zip and
+# --gh -> one release per ROM+codename titled "<release name> <codename>", under
+#        tag "<slugged release name>-<codename>" (e.g. "AxionOS 2.9 KL5n" at tag
+#        axionos-2.9-KL5n) in GH_RELEASE_REPO (default Transsion-G81/release).
+#        The release name is the --rom profile unless you set --release-name NAME
+#        (or type it in the TUI's "release name" row); with neither, the tag and
+#        title fall back to the bare codename (X6531/X6531B/X6532/KL5/KL5n).  The
+#        rom zip and
 #        the tagged boot/vendor_boot images are replaced on every run, so a
 #        rebuild across ROMs/GMS modes lands in the same release; the boot
 #        image name carries the ROM (boot-<codename>-<rom>.img) so two ROMs

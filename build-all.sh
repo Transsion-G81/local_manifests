@@ -104,6 +104,9 @@ INJECTED_MK=""
 # filled by rom_detect_gms(): for LineageOS from our own device gate, for other
 # ROMs by probing the synced tree for the GApps/microG it actually ships.
 ROM="${ROM:-lineage}"
+# free-text release name (--release-name); prefixes each github release title.
+# Empty -> gh_publish falls back to $ROM, and then to the bare codename.
+RELEASE_NAME="${RELEASE_NAME:-}"
 ROM_NAME=""
 ROM_PREFIX=""
 ROM_ZIP_GLOB=""
@@ -494,8 +497,9 @@ Requires: bash 4+, curl, sha1sum, sha256sum, base64.  Optional: gh (GitHub
 releases) and ssh + sftp + rsync (SourceForge).  chmod +x this file first.
 
 Release mirrors (-u stays Buzzheavier):
-  --gh publishes each codename to one GitHub release (tag and name = the
-  codename, e.g. X6532; its assets - rom zip, boot-<dev>-<rom>.img,
+  --gh publishes each codename to one GitHub release titled
+  "<RELEASE_NAME> <codename>" under tag "<slug>-<codename>" (see --release-name),
+  so each ROM owns its own release; its assets - rom zip, boot-<dev>-<rom>.img,
   vendor_boot-<dev>-<rom>.img and EXTRA_IMAGES - are replaced on every run, so a
   rebuild across ROMs/GMS modes lands in the same release (the ROM in the boot
   image name keeps two ROMs sharing a codename from overwriting each other).
@@ -530,6 +534,10 @@ Options:
       --rom NAME                     ROM profile: lineage, evox (Evolution X),
                                      yaap, infinity (Project Infinity X),
                                      axion (default: lineage)
+      --release-name NAME            release title prefix; each github release is
+                                     titled "NAME <codename>" with tag
+                                     "<slugged NAME>-<codename>" (default: the --rom
+                                     profile; empty -> the bare codename)
   -v, --variant user|userdebug|eng   build variant (default: interactive TUI)
       --release NAME                 lunch release config (e.g. bp4a); default
                                      reads the ROM's release pin (if it has one)
@@ -1095,35 +1103,50 @@ gh_skip() {
   DO_GH="no"
 }
 
+# a git-tag-safe slug of a free-text release name ("AxionOS 2.9" -> "axionos-2.9")
+release_slug() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[^a-z0-9._-]\+/-/g' -e 's/^-\+//' -e 's/-\+$//'
+}
+
 # GitHub: prepare the codename's release once per run, then upload (replace) one
 # file.  gh authenticates itself (GH_TOKEN / GITHUB_TOKEN / stored login).
+# Each release is titled "<RELEASE_NAME> <codename>" under tag
+# "<slug(RELEASE_NAME)>-<codename>", so each ROM owns its own release; with no
+# RELEASE_NAME/ROM it falls back to the bare codename.
 gh_publish() {
   local file="$1" name="$2" tag="$3" notes="${4:-}"
+  local relname="${RELEASE_NAME:-$ROM}" ghtag ghtitle
+  if [[ -n "$relname" ]]; then
+    ghtag="$(release_slug "$relname")-$tag"; ghtitle="$relname $tag"
+  else
+    ghtag="$tag"; ghtitle="$tag"
+  fi
   if [[ "$DRY_RUN" == "yes" ]]; then
-    say "    gh release create/edit $tag --repo $GH_RELEASE_REPO   (title $tag)"
-    say "    gh release upload $tag $file --repo $GH_RELEASE_REPO --clobber"
+    say "    gh release create/edit $ghtag --repo $GH_RELEASE_REPO   (title $ghtitle)"
+    say "    gh release upload $ghtag $file --repo $GH_RELEASE_REPO --clobber"
     return 0
   fi
   if [[ -z "$GH_CHECKED" ]]; then
     GH_CHECKED=1
     gh_ready || { gh_skip; return 0; }
   fi
-  if [[ -z "${GH_MIRRORED[$tag]:-}" ]]; then
-    if gh release view "$tag" --repo "$GH_RELEASE_REPO" >/dev/null 2>&1; then
-      gh release edit "$tag" --repo "$GH_RELEASE_REPO" --title "$tag" --notes "$notes" >/dev/null 2>&1 \
-        || warn "github: could not update release $tag"
-    elif ! gh release create "$tag" --repo "$GH_RELEASE_REPO" --title "$tag" --notes "$notes" >/dev/null; then
-      err "github: could not create release $tag"
+  if [[ -z "${GH_MIRRORED[$ghtag]:-}" ]]; then
+    if gh release view "$ghtag" --repo "$GH_RELEASE_REPO" >/dev/null 2>&1; then
+      gh release edit "$ghtag" --repo "$GH_RELEASE_REPO" --title "$ghtitle" --notes "$notes" >/dev/null 2>&1 \
+        || warn "github: could not update release $ghtag"
+    elif ! gh release create "$ghtag" --repo "$GH_RELEASE_REPO" --title "$ghtitle" --notes "$notes" >/dev/null; then
+      err "github: could not create release $ghtag"
       return 1
     fi
-    GH_MIRRORED[$tag]=1
+    GH_MIRRORED[$ghtag]=1
   fi
-  if gh release upload "$tag" "$file" --repo "$GH_RELEASE_REPO" --clobber >/dev/null; then
-    ok "github  $tag <- $name"
+  if gh release upload "$ghtag" "$file" --repo "$GH_RELEASE_REPO" --clobber >/dev/null; then
+    ok "github  $ghtag <- $name"
     GH_UPLOADED=$((GH_UPLOADED + 1))
-    MIRROR_LINKS+=("https://github.com/$GH_RELEASE_REPO/releases/tag/$tag $name (github)")
+    MIRROR_LINKS+=("https://github.com/$GH_RELEASE_REPO/releases/tag/$ghtag $name (github)")
   else
-    err "github: upload failed for $name ($tag)"
+    err "github: upload failed for $name ($ghtag)"
     return 1
   fi
 }
@@ -1990,6 +2013,21 @@ tui_sf_folder() {
   printf '\033[2J\033[?25l'
 }
 
+# type the release name (the free-text prefix of every github release title).
+# blank keeps the current name; the default is the picked rom profile.
+tui_edit_release() {
+  local v
+  stty "$TUI_STTY" </dev/tty 2>/dev/null
+  printf '\033[?25h\033[2J\033[H'
+  printf '  %srelease name%s - each github release is titled "<name> <codename>"\n' "$c_cyn" "$c_reset"
+  printf '  and tagged "<slugged name>-<codename>" (default: the rom profile).\n\n'
+  printf '  current: %s\n\n  type a new name, blank to keep: ' "${RELEASE_NAME:-$ROM}"
+  IFS= read -r v </dev/tty || v=""
+  [[ -n "$v" ]] && RELEASE_NAME="$v"
+  stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+  printf '\033[2J\033[?25l'
+}
+
 tui_render() {
   local n=${#DEVICES[@]} i lab short row
   printf '\033[H'
@@ -2044,24 +2082,29 @@ tui_render() {
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 6)))"
-  [[ "$TUI_GH" == "yes" ]] && row+="[x] " || row+="[ ] "
-  (( TUI_FOCUS == n + 6 )) && row+="${c_bold}github release ($GH_RELEASE_REPO)${c_reset}" || row+="github release ($GH_RELEASE_REPO)"
+  row+="release name: ${RELEASE_NAME:-$ROM}"
+  (( TUI_FOCUS == n + 6 )) && row="${c_bold}${row}${c_reset}"
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 7)))"
-  [[ "$TUI_SF" == "yes" ]] && row+="[x] " || row+="[ ] "
-  (( TUI_FOCUS == n + 7 )) && row+="${c_bold}sourceforge ($SF_PROJECT)${c_reset}" || row+="sourceforge ($SF_PROJECT)"
+  [[ "$TUI_GH" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 7 )) && row+="${c_bold}github release ($GH_RELEASE_REPO)${c_reset}" || row+="github release ($GH_RELEASE_REPO)"
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 8)))"
-  (( TUI_FOCUS == n + 8 )) && row+="${c_bold}sf folder: ${SF_FOLDER:-<pick>}${c_reset}" || row+="sf folder: ${SF_FOLDER:-<pick>}"
+  [[ "$TUI_SF" == "yes" ]] && row+="[x] " || row+="[ ] "
+  (( TUI_FOCUS == n + 8 )) && row+="${c_bold}sourceforge ($SF_PROJECT)${c_reset}" || row+="sourceforge ($SF_PROJECT)"
   printf '%s\033[K\n' "$row"
 
   row="$(tui_mark $((n + 9)))"
+  (( TUI_FOCUS == n + 9 )) && row+="${c_bold}sf folder: ${SF_FOLDER:-<pick>}${c_reset}" || row+="sf folder: ${SF_FOLDER:-<pick>}"
+  printf '%s\033[K\n' "$row"
+
+  row="$(tui_mark $((n + 10)))"
   if [[ -n "$TUI_LINKS" ]]; then
     lab="$(printf '%s\n' "$TUI_LINKS" | links_parse | wc -l | tr -d ' ') link(s)"
   else lab="(none)"; fi
-  (( TUI_FOCUS == n + 9 )) && row+="${c_bold}no build - links: $lab${c_reset}" || row+="no build - links: $lab"
+  (( TUI_FOCUS == n + 10 )) && row+="${c_bold}no build - links: $lab${c_reset}" || row+="no build - links: $lab"
   printf '%s\033[K\n' "$row"
   printf '\033[K\n'
 
@@ -2097,7 +2140,7 @@ tui_run() {
     TUI_STATUS=""
     case "$key" in
       up)   (( TUI_FOCUS > 0 )) && TUI_FOCUS=$((TUI_FOCUS - 1)) ;;
-      down) (( TUI_FOCUS < n + 9 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
+      down) (( TUI_FOCUS < n + 10 )) && TUI_FOCUS=$((TUI_FOCUS + 1)) ;;
       left|right)
         if   (( TUI_FOCUS == 0 ));     then tui_cycle_rom "$key"
         elif (( TUI_FOCUS == 1 ));     then [[ "$key" == left ]] && tui_cycle -1 || tui_cycle 1
@@ -2112,10 +2155,11 @@ tui_run() {
         elif (( TUI_FOCUS == n + 3 )); then [[ "$TUI_XGSI" == yes ]] && TUI_XGSI="no" || TUI_XGSI="yes"
         elif (( TUI_FOCUS == n + 4 )); then TUI_GMS=$(((TUI_GMS + 1) % ${#TUI_GMS_MODES[@]}))
         elif (( TUI_FOCUS == n + 5 )); then tui_edit_lines
-        elif (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"
-        elif (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"
-        elif (( TUI_FOCUS == n + 8 )); then tui_sf_folder
-        elif (( TUI_FOCUS == n + 9 )); then tui_edit_links
+        elif (( TUI_FOCUS == n + 6 )); then tui_edit_release
+        elif (( TUI_FOCUS == n + 7 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"
+        elif (( TUI_FOCUS == n + 8 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"
+        elif (( TUI_FOCUS == n + 9 )); then tui_sf_folder
+        elif (( TUI_FOCUS == n + 10 )); then tui_edit_links
         else TUI_SEL[TUI_FOCUS - 2]=$((1 - TUI_SEL[TUI_FOCUS - 2]))
         fi ;;
       upload) [[ "$TUI_UPLOAD" == yes ]] && TUI_UPLOAD="no" || TUI_UPLOAD="yes" ;;
@@ -2132,10 +2176,22 @@ tui_run() {
       none) for ((i = 0; i < n; i++)); do TUI_SEL[i]=0; done ;;
       enter)
         if (( TUI_FOCUS == n + 5 )); then tui_edit_lines; tui_render; continue; fi
-        if (( TUI_FOCUS == n + 6 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"; tui_render; continue; fi
-        if (( TUI_FOCUS == n + 7 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"; tui_render; continue; fi
-        if (( TUI_FOCUS == n + 8 )); then tui_sf_folder; tui_render; continue; fi
-        if (( TUI_FOCUS == n + 9 )); then tui_edit_links; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 6 )); then tui_edit_release; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 7 )); then [[ "$TUI_GH" == yes ]] && TUI_GH="no" || TUI_GH="yes"; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 8 )); then [[ "$TUI_SF" == yes ]] && TUI_SF="no" || TUI_SF="yes"; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 9 )); then tui_sf_folder; tui_render; continue; fi
+        if (( TUI_FOCUS == n + 10 )); then
+          # paste the links and publish straight away; the paste already said what
+          # to do, so a second enter on the row would only be busywork.
+          tui_edit_links
+          if [[ -n "$TUI_LINKS" ]]; then
+            if [[ "$TUI_GH" != yes && "$TUI_SF" != yes ]]; then
+              TUI_STATUS="enable github and/or sourceforge to publish"; tui_render; continue
+            fi
+            break
+          fi
+          tui_render; continue
+        fi
         any=0
         for ((i = 0; i < n; i++)); do (( TUI_SEL[i] )) && any=1; done
         if (( any == 0 )); then TUI_STATUS="select at least one device"; tui_render; continue; fi
@@ -2262,6 +2318,7 @@ parse_args() {
     case "$1" in
       -v|--variant)   VARIANT="${2:-}"; shift 2 ;;
       --rom)          ROM="${2:-}"; shift 2 ;;
+      --release-name) RELEASE_NAME="${2:-}"; shift 2 ;;
       --release)      LUNCH_RELEASE="${2:-}"; shift 2 ;;
       -d|--devices)   REQUESTED="${2:-}"; shift 2 ;;
       -u|--upload)
