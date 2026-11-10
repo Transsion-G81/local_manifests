@@ -2319,9 +2319,19 @@ ask_links() {
 # link mirror - instead of dying on the missing tree.
 mirror_only() {
   info "no AOSP tree here - link-only mirror mode"
+  # this mode exists to publish, so default both mirrors on and never fall
+  # through with neither enabled.
   if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
-    [[ "$(ask "publish to GitHub release ($GH_RELEASE_REPO)?" "n")" =~ ^[Yy] ]] && DO_GH="yes" || DO_GH="no"
-    [[ "$(ask "publish to SourceForge ($SF_PROJECT)?" "n")" =~ ^[Yy] ]] && DO_SF="yes" || DO_SF="no"
+    local try
+    for try in 1 2 3; do
+      [[ "$(ask "publish to GitHub release ($GH_RELEASE_REPO)?" "y")" =~ ^[Yy] ]] && DO_GH="yes" || DO_GH="no"
+      [[ "$(ask "publish to SourceForge ($SF_PROJECT)?" "y")" =~ ^[Yy] ]] && DO_SF="yes" || DO_SF="no"
+      [[ "$DO_GH" == "yes" || "$DO_SF" == "yes" ]] && break
+      warn "enable at least one mirror (answer y, or pass --gh / --sf)"
+    done
+  fi
+  if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
+    die "no mirror enabled - pass --gh and/or --sf"
   fi
   if [[ "$DO_GH" == "yes" ]] && ! have gh; then warn "github: gh CLI not found - skipped"; DO_GH="no"; fi
   if [[ "$DO_SF" == "yes" ]] && { ! have ssh || ! have rsync || ! have sftp; }; then
@@ -2673,8 +2683,16 @@ run_mirror_mode() {
   RELEASE_ROOT="${RELEASE_ROOT:-${ANDROID_ROOT:+$ANDROID_ROOT/out/tranG81-releases}}"
   RELEASE_ROOT="${RELEASE_ROOT:-$HOME/tranG81-releases}"
   if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
-    warn "release links given but no mirror is on - enable github and/or sourceforge"
-    exit 1
+    # publishing is the only thing this mode does, so ask (default on) rather
+    # than dropping the links; with no terminal, say how.
+    if [[ -t 0 && -r /dev/tty ]]; then
+      [[ "$(ask "publish to GitHub release ($GH_RELEASE_REPO)?" "y")" =~ ^[Yy] ]] && DO_GH="yes" || DO_GH="no"
+      [[ "$(ask "publish to SourceForge ($SF_PROJECT)?" "y")" =~ ^[Yy] ]] && DO_SF="yes" || DO_SF="no"
+    fi
+    if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
+      warn "release links given but no mirror is on - pass --gh and/or --sf"
+      exit 1
+    fi
   fi
   mkdir -p "$RELEASE_ROOT"
   if [[ "$DO_SF" == "yes" && -z "$SF_FOLDER" && -t 0 && -r /dev/tty ]]; then
