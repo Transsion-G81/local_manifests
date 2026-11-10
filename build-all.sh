@@ -527,6 +527,8 @@ Release mirrors (-u stays Buzzheavier):
   aria2 (8 connections, when installed) or curl, both resuming a big file on a
   break.  Files are grouped per codename and published, then it exits.  The
   TUI's "no build - links" row and the plain menu collect the same links.
+  On a machine with no AOSP tree, a plain run (no -v) asks for the mirrors, the
+  release name and the links and does only this, instead of stopping.
   --no-build is different: it re-uploads the artifacts already collected in the
   release dir, with no download.
 
@@ -2291,6 +2293,15 @@ menu_ask() {
   PRODUCT_EXTRA_LINES="$(ask "make lines to append to the product makefile (blank = keep)" "$PRODUCT_EXTRA_LINES")"
 
   local nbd="n"; [[ "$NO_BUILD" == "yes" ]] && nbd="y"
+  ask_links
+  if [[ ${#MIRROR_URLS[@]} -eq 0 ]]; then
+    [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
+  fi
+}
+
+# paste the whole download-links block (or one URL per line); links_parse pairs
+# each URL with the label line above it, so the codename comes from the block.
+ask_links() {
   say ""
   info "release links - paste the whole download-links block (or one URL per line), blank to finish"
   local _l _block="" _n _u _ln
@@ -2302,9 +2313,24 @@ menu_ask() {
     _n="${_ln%%$'\t'*}"; _u="${_ln#*$'\t'}"
     [[ -n "$_u" ]] && MIRROR_URLS+=("$_n"$'\t'"$_u")
   done < <(printf '%s\n' "$_block" | links_parse)
-  if [[ ${#MIRROR_URLS[@]} -eq 0 ]]; then
-    [[ "$(ask "skip the build and re-upload the already-collected artifacts?" "$nbd")" =~ ^[Yy] ]] && NO_BUILD="yes" || NO_BUILD="no"
+}
+
+# no AOSP tree: the build cannot run, so offer the one thing that can - the
+# link mirror - instead of dying on the missing tree.
+mirror_only() {
+  info "no AOSP tree here - link-only mirror mode"
+  if [[ "$DO_GH" != "yes" && "$DO_SF" != "yes" ]]; then
+    [[ "$(ask "publish to GitHub release ($GH_RELEASE_REPO)?" "n")" =~ ^[Yy] ]] && DO_GH="yes" || DO_GH="no"
+    [[ "$(ask "publish to SourceForge ($SF_PROJECT)?" "n")" =~ ^[Yy] ]] && DO_SF="yes" || DO_SF="no"
   fi
+  if [[ "$DO_GH" == "yes" ]] && ! have gh; then warn "github: gh CLI not found - skipped"; DO_GH="no"; fi
+  if [[ "$DO_SF" == "yes" ]] && { ! have ssh || ! have rsync || ! have sftp; }; then
+    warn "sourceforge: ssh/rsync/sftp not found - skipped"; DO_SF="no"
+  fi
+  [[ -n "$RELEASE_NAME" ]] || RELEASE_NAME="$(ask "release name - github title prefix, blank = the rom profile" "$ROM")"
+  ask_links
+  run_mirror_mode
+  exit 0
 }
 
 interactive_menu() {
@@ -2387,15 +2413,15 @@ parse_args() {
 find_root() {
   if [[ -n "$ANDROID_ROOT" ]]; then
     [[ -f "$ANDROID_ROOT/build/envsetup.sh" ]] || die "ANDROID_ROOT=$ANDROID_ROOT has no build/envsetup.sh"
-    return
+    return 0
   fi
   local d="$PWD"
   local i
   for i in 1 2 3 4 5 6 7 8; do
-    if [[ -f "$d/build/envsetup.sh" ]]; then ANDROID_ROOT="$d"; return; fi
+    if [[ -f "$d/build/envsetup.sh" ]]; then ANDROID_ROOT="$d"; return 0; fi
     d="$(dirname "$d")"
   done
-  die "no AOSP root found - run from the source tree or set ANDROID_ROOT"
+  return 1
 }
 
 select_devices() {
@@ -2682,7 +2708,10 @@ main() {
   fi
   # a link-only run needs no AOSP tree, so publish before looking for one
   if [[ ${#MIRROR_URLS[@]} -gt 0 ]]; then run_mirror_mode; fi
-  find_root
+  if ! find_root; then
+    if [[ -t 0 && -r /dev/tty && -z "$VARIANT" ]]; then mirror_only; fi
+    die "no AOSP root found - run from the source tree or set ANDROID_ROOT (or --mirror BLOCK to publish links without a tree)"
+  fi
   # what GApps/microG the tree actually provides, then the matching menu
   rom_prepare
 

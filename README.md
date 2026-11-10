@@ -144,7 +144,8 @@ export TELEGRAM_BOT_TOKEN=<TOKEN> TELEGRAM_CHAT_ID=<CHAT_ID>
 # python lacks it, then the signed CDN link it returns is fetched with aria2
 # (8 connections, if installed - apt install aria2) or curl, both resuming a
 # big file on a break instead of restarting it.  no AOSP tree is needed for
-# this: with no ANDROID_ROOT the release dir is ~/tranG81-releases.
+# this: with no ANDROID_ROOT the release dir is ~/tranG81-releases, and a plain
+# run with no tree and no -v offers this link-only flow by itself.
 # same as the TUI "no build - links" row.
 ./build-all.sh --mirror https://buzzheavier.com/<id>,https://buzzheavier.com/<id2> --gh --sf --sf-folder releases
 # ...or paste the whole download-links block (a file-name line above its URL)
