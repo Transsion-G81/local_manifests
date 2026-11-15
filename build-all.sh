@@ -176,6 +176,8 @@ declare -a TIMING=() DIRTY=() REL_JSON=() LINK_BLOCKS=()
 declare -a GMS_WANT=() GMS_MODE_LIST=()
 declare -a MIRROR_URLS=() MIRROR_LINKS=()
 declare -A GH_MIRRORED=()
+declare -a DEV_LINK_ORDER=()
+declare -A DEV_ROM_LINKS=() DEV_IMG_LINKS=() DEV_LINK_EXPIRY=()
 GMS_MODE="" RELEASE_MODE_DIR=""
 
 # filled in by bh_upload() for the caller
@@ -917,7 +919,7 @@ verify_rom() {
     warn "no output dir for $device yet - rom check skipped"
     return 0
   fi
-  props=$(find "$out" -maxdepth 4 -name build.prop -print 2>/dev/null)
+  props=$(find "$out"/system "$out"/vendor "$out"/product "$out"/odm -maxdepth 3 -name build.prop 2>/dev/null || find "$out" -maxdepth 4 -name build.prop -print 2>/dev/null)
 
   while read -r p; do
     [[ -n "$p" ]] || continue
@@ -950,7 +952,8 @@ verify_rom() {
 # entry with the wrong sha1 is fatal and stops the upload.
 verify_zip_radio() {
   local zip="$1" vendortree="$2" radiodir="$3"
-  local rel exp name entry got n=0 bad=0
+  local rel exp name entry got n=0 bad=0 zip_list tmpdir
+  local -a names=() exps=() entries=() pick=()
 
   if [[ -z "$zip" || ! -f "$zip" ]]; then
     warn "no rom zip to check for $vendortree/$radiodir firmware - skipped"
@@ -961,25 +964,41 @@ verify_zip_radio() {
     return 0
   fi
 
+  zip_list="$(unzip -Z1 "$zip" 2>/dev/null || true)"
   while read -r rel exp; do
     [[ -n "$rel" ]] || continue
     n=$((n + 1))
     name="$(basename "$rel")"
-    entry="$(unzip -Z1 "$zip" 2>/dev/null | grep -iE "(^|/)$name\$" | head -n1)"
+    entry="$(printf '%s
+' "$zip_list" | grep -iE "(^|/)$name\$" | head -n1)"
     if [[ -z "$entry" ]]; then
       warn "rom radio $name: not packaged in the rom zip (build-time sha1 check still applies)"
       continue
     fi
-    got="$(unzip -p "$zip" "$entry" 2>/dev/null | sha1sum | awk '{print $1}')"
-    if [[ "$got" == "$exp" ]]; then
-      ok "rom radio ok   $name"
-    else
-      err "rom radio WRONG: $name ($entry in ${zip##*/})"
-      err "   expected $exp"
-      err "   actual   $got"
-      bad=$((bad + 1))
-    fi
+    names+=("$name"); exps+=("$exp"); entries+=("$entry"); pick+=("$entry")
   done < <(radio_image_list "$vendortree" "$radiodir")
+
+  if [[ ${#pick[@]} -gt 0 ]]; then
+    tmpdir="$(mktemp -d)"
+    if unzip -j -q -o "$zip" "${pick[@]}" -d "$tmpdir" 2>/dev/null; then
+      local i
+      for (( i = 0; i < ${#names[@]}; i++ )); do
+        name="${names[$i]}"; exp="${exps[$i]}"; entry="${entries[$i]}"
+        got="$(sha1sum "$tmpdir/${entry##*/}" 2>/dev/null | awk '{print $1}')"
+        if [[ "$got" == "$exp" ]]; then
+          ok "rom radio ok   $name"
+        else
+          err "rom radio WRONG: $name ($entry in ${zip##*/})"
+          err "   expected $exp"
+          err "   actual   $got"
+          bad=$((bad + 1))
+        fi
+      done
+    else
+      warn "batch unzip failed for $zip - skipping radio check"
+    fi
+    rm -rf "$tmpdir"
+  fi
 
   if [[ "$n" -eq 0 ]]; then
     warn "no '$radiodir/' firmware declared - post-build rom radio check skipped"
@@ -1011,7 +1030,8 @@ bh_upload() {
     return 0
   fi
 
-  resp=$(curl -sS --retry 3 --retry-delay 2 --retry-all-errors -o - -w $'\n%{http_code}' \
+  resp=$(curl -sS --connect-timeout 20 --speed-limit 10240 --speed-time 60 \
+         --retry 3 --retry-delay 2 --retry-all-errors -o - -w $'\n%{http_code}' \
          -T "$file" "${hdr[@]+"${hdr[@]}"}" "$url") || { err "curl failed for $name"; return 1; }
   code="${resp##*$'\n'}"
   body="${resp%$'\n'*}"
@@ -1238,13 +1258,18 @@ sf_list_dir() {
 # both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set; otherwise the plain
 # webhook payload {"content":..,"text":..} is posted to NOTIFY_URL.
 notify() {
-  local msg="$1" payload="" url=""
+  local msg="$1" parse_mode="${2:-}" payload="" url=""
   if [[ "$NOTIFY_MODE" == "telegram" ]]; then
     [[ -n "$TELEGRAM_BOT_TOKEN" && -n "$TELEGRAM_CHAT_ID" ]] || {
       warn "telegram notify: need --notify telegram:TOKEN:CHAT or TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"; return 0; }
     url="https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage"
-    payload=$(printf '{"chat_id":%s,"text":%s,"disable_web_page_preview":true}' \
-      "$(json_str "$TELEGRAM_CHAT_ID")" "$(json_str "$msg")")
+    if [[ -n "$parse_mode" ]]; then
+      payload=$(printf '{"chat_id":%s,"text":%s,"parse_mode":%s,"disable_web_page_preview":true}' \
+        "$(json_str "$TELEGRAM_CHAT_ID")" "$(json_str "$msg")" "$(json_str "$parse_mode")")
+    else
+      payload=$(printf '{"chat_id":%s,"text":%s,"disable_web_page_preview":true}' \
+        "$(json_str "$TELEGRAM_CHAT_ID")" "$(json_str "$msg")")
+    fi
   elif [[ -n "$NOTIFY_URL" ]]; then
     url="$NOTIFY_URL"
     payload=$(printf '{"content":%s,"text":%s}' "$(json_str "$msg")" "$(json_str "$msg")")
@@ -1312,27 +1337,98 @@ link_category() {
   esac
 }
 
-# Send the download link of every uploaded file, grouped per product and
-# tagged by category (rom / boot / vendor_boot / image).  Telegram caps a
-# message at 4096 chars, so whole per-product blocks are packed into as few
-# messages as possible.  Best effort, never fatal.
-notify_links() {
-  local header="tranG81 $VARIANT - download links (${#LINK_BLOCKS[@]} product(s)):"
-  [[ -n "$NOTIFY_MODE" && ${#LINK_BLOCKS[@]} -gt 0 ]] || return 0
+device_display_name() {
+  case "$1" in
+    X6531)  echo "Infinix HOT 50i (X6531)" ;;
+    X6531B) echo "Infinix HOT 50i NFC (X6531B)" ;;
+    X6532)  echo "Infinix SMART 9 (X6532)" ;;
+    KL5)    echo "TECNO Spark 30C (KL5)" ;;
+    KL5n)   echo "TECNO Spark 30C NFC (KL5n)" ;;
+    *)      echo "$1" ;;
+  esac
+}
 
-  local b msg all=""
+mode_display_name() {
+  case "$1" in
+    vanilla) echo "Vanilla" ;;
+    gapps)   echo "GApps" ;;
+    microg)  echo "microG" ;;
+    *)       echo "$1" ;;
+  esac
+}
+
+html_esc() {
+  local s="$1"
+  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"
+  printf '%s' "$s"
+}
+
+# Send readable download links grouped once per device across all built GMS
+# variants (Vanilla / GApps / microG + boot / vendor_boot).  Telegram receives
+# compact HTML hyperlinks; webhooks receive clean plain-text per-device blocks.
+notify_links() {
+  [[ -n "$NOTIFY_MODE" && ( ${#DEV_LINK_ORDER[@]} -gt 0 || ${#LINK_BLOCKS[@]} -gt 0 ) ]] || return 0
+
   if [[ "$NOTIFY_MODE" != "telegram" ]]; then
+    local header="tranG81 $VARIANT - download links (${#LINK_BLOCKS[@]} build(s)):"
+    local b all=""
     for b in "${LINK_BLOCKS[@]}"; do all+="$header"$'\n'"$b"$'\n'; header=""; done
     [[ -n "$all" ]] && notify "$all"
     return 0
   fi
 
-  msg="$header"
-  for b in "${LINK_BLOCKS[@]}"; do
-    if (( ${#msg} + ${#b} + 1 > 3900 )); then notify "$msg"; msg="$b";
-    else msg+=$'\n'"$b"; fi
+  local bdate header footer dev title m u rom_part img_part blk msg exp=""
+  local -a blocks=()
+  bdate="$(date -u +%Y-%m-%d)"
+  header="<b>$(html_esc "$ROM_NAME") — Download Links</b>"$'\n'"<i>Variant: $(html_esc "$VARIANT") · Date: $bdate</i>"
+
+  for dev in "${DEV_LINK_ORDER[@]}"; do
+    title="$(html_esc "$(device_display_name "$dev")")"
+    rom_part=""
+    for m in vanilla gapps microg; do
+      u="${DEV_ROM_LINKS["$dev:$m"]:-}"
+      [[ -n "$u" ]] || continue
+      rom_part+="${rom_part:+ · }<a href=\"$(html_esc "$u")\">$(mode_display_name "$m")</a>"
+    done
+    img_part="${DEV_IMG_LINKS[$dev]:-}"
+    [[ -z "$exp" && -n "${DEV_LINK_EXPIRY[$dev]:-}" ]] && exp="${DEV_LINK_EXPIRY[$dev]%%T*}"
+
+    blk="📱 <b>$title</b>"
+    [[ -n "$rom_part" ]] && blk+=$'\n'"• ROM: $rom_part"
+    [[ -n "$img_part" ]] && blk+=$'\n'"• Images: $img_part"
+    blocks+=("$blk")
   done
-  [[ -n "$msg" ]] && notify "$msg"
+
+  if [[ ${#blocks[@]} -eq 0 ]]; then
+    msg="$header"
+    for b in "${LINK_BLOCKS[@]}"; do
+      if (( ${#msg} + ${#b} + 1 > 3900 )); then notify "$msg"; msg="$b";
+      else msg+=$'\n'"$b"; fi
+    done
+    [[ -n "$msg" ]] && notify "$msg"
+    return 0
+  fi
+
+  footer=$'\n\n'"📝 <b>Notes</b>"
+  footer+=$'\n'"• Vanilla = no Google services · GApps = MindTheGapps baked · microG = microG baked"
+  footer+=$'\n'"• Flash <code>vendor_boot.img</code> (OSS recovery) before flashing ROM zip; Format Data on clean flash."
+  [[ -n "$exp" ]] && footer+=$'\n'"• ⏳ Anonymous links expire around <b>$(html_esc "$exp") (UTC)</b>."
+
+  msg="$header"
+  for b in "${blocks[@]}"; do
+    if (( ${#msg} + ${#b} + 2 > 3900 )); then
+      notify "$msg" "HTML"
+      msg="$b"
+    else
+      msg+=$'\n\n'"$b"
+    fi
+  done
+  if (( ${#msg} + ${#footer} > 3900 )); then
+    notify "$msg" "HTML"
+    notify "${footer#$'\n\n'}" "HTML"
+  else
+    notify "${msg}${footer}" "HTML"
+  fi
 }
 
 # --notify accepts a webhook URL, "telegram", "telegram:TOKEN:CHAT", or a
@@ -1652,6 +1748,9 @@ run_build() {
   fi
   set -u
   restore_product_lines "$pmk"
+  if [[ "$nfc" == "1" && -d "$ANDROID_ROOT/$devtree/patches/nfc" && -d "$ANDROID_ROOT/hardware/nxp/nfc" ]]; then
+    revert_patch_set "hardware/nxp/nfc" "$ANDROID_ROOT/$devtree/patches/nfc" >/dev/null 2>&1 || true
+  fi
   return "$rc"
 }
 
@@ -1681,7 +1780,7 @@ collect_artifacts() {
     *"$tag"*) dest="${stem}${msuf}.zip" ;;
     *)        dest="${stem}-${tag}${msuf}.zip" ;;
   esac
-  cp -f "$zip" "$dir/$dest" || return 1
+  { ln -f "$zip" "$dir/$dest" 2>/dev/null || cp -f "$zip" "$dir/$dest"; } || return 1
   COLLECTED+=("$dir/$dest")
 
   # boot.img / vendor_boot.img carry no system apps, so they are identical
@@ -1697,7 +1796,7 @@ collect_artifacts() {
       continue
     fi
     name="${img%.img}-${tag}-${ROM}.img"
-    cp -f "$out/$img" "$dir/$name" || return 1
+    { ln -f "$out/$img" "$dir/$name" 2>/dev/null || cp -f "$out/$img" "$dir/$name"; } || return 1
     COLLECTED+=("$dir/$name")
   done
 }
@@ -2817,21 +2916,20 @@ main() {
   RUN_START=$(date +%s)
 
   local entry product devtree vendortree device sysdev radiodir fp nfc log a name rzip tag
-  local idx=0 total=${#SELECTED[@]} t0 dt status mode
+  local idx=0 total=$(( ${#SELECTED[@]} * ${#GMS_MODE_LIST[@]} )) t0 dt status mode
   local -a pf
 
-  for entry in "${SELECTED[@]}"; do
-    idx=$((idx + 1))
-    IFS='|' read -r product devtree vendortree device sysdev radiodir fp <<<"$entry"
-    nfc=0; [[ "$product" == "${ROM_PREFIX}KL5n" ]] && nfc=1
-
-    # all GMS modes of one device run together, before the next device; KL5n
-    # patches the shared hardware/nxp/nfc HAL and never reverts it, so it must
-    # be the very last device to build.
-    for mode in "${GMS_MODE_LIST[@]}"; do
+  # Outer loop by GMS mode so sibling products (X6531/X6531B, KL5/KL5n) share
+  # out/target/product/<device> within each mode; KL5n reverts NFC patches after itself.
+  for mode in "${GMS_MODE_LIST[@]}"; do
     GMS_MODE="$mode"
     RELEASE_MODE_DIR="$RELEASE_ROOT/$VARIANT/$mode"
     mkdir -p "$RELEASE_MODE_DIR"
+
+    for entry in "${SELECTED[@]}"; do
+    idx=$((idx + 1))
+    IFS='|' read -r product devtree vendortree device sysdev radiodir fp <<<"$entry"
+    nfc=0; [[ "$product" == "${ROM_PREFIX}KL5n" ]] && nfc=1
 
     say ""
     info "=== $product  [$idx/$total]  [$mode]  (device=$device system=$sysdev) ==="
@@ -2966,14 +3064,31 @@ main() {
     TIMING+=("$product|$GMS_MODE|$dt|${#COLLECTED[@]}|$status")
     add_json_record "$product" "$GMS_MODE" "$sysdev" "$dt" "$status" "${pf[@]+"${pf[@]}"}"
 
-    # human-readable link block for the notify (per product, per file/category)
+    # record links both flat (webhooks) and grouped per device (Telegram HTML)
     if [[ ${#pf[@]} -gt 0 ]]; then
-      local blk="$product  [$GMS_MODE]  ($sysdev)  $status" fent fname furl fcat
+      local blk="$product  [$GMS_MODE]  ($sysdev)  $status" fent fname furl fsha fexp fcat img_lbl
+      if [[ -z "${DEV_ROM_LINKS["$sysdev:$GMS_MODE"]+x}" && -z "${DEV_IMG_LINKS[$sysdev]+x}" ]]; then
+        local seen=0 _d
+        for _d in "${DEV_LINK_ORDER[@]+"${DEV_LINK_ORDER[@]}"}"; do [[ "$_d" == "$sysdev" ]] && seen=1; done
+        (( seen )) || DEV_LINK_ORDER+=("$sysdev")
+      fi
       for fent in "${pf[@]}"; do
-        IFS='|' read -r fname furl _ <<<"$fent"
+        IFS='|' read -r fname furl fsha fexp <<<"$fent"
         fcat=$(link_category "$fname")
         if [[ -n "$furl" ]]; then
           blk+=$'\n'"   [$fcat] $fname"$'\n'"      $furl"
+          [[ -n "$fexp" && -z "${DEV_LINK_EXPIRY[$sysdev]:-}" ]] && DEV_LINK_EXPIRY["$sysdev"]="$fexp"
+          case "$fcat" in
+            rom)
+              DEV_ROM_LINKS["$sysdev:$GMS_MODE"]="$furl"
+              ;;
+            boot|vendor_boot|image)
+              img_lbl="${fname%.img}.img"
+              [[ "$fcat" == "boot" ]] && img_lbl="boot.img"
+              [[ "$fcat" == "vendor_boot" ]] && img_lbl="vendor_boot.img"
+              DEV_IMG_LINKS["$sysdev"]="${DEV_IMG_LINKS[$sysdev]:+${DEV_IMG_LINKS[$sysdev]} · }<a href=\"$(html_esc "$furl")\">$(html_esc "$img_lbl")</a>"
+              ;;
+          esac
         else
           blk+=$'\n'"   [$fcat] $fname  (no link)"
         fi
